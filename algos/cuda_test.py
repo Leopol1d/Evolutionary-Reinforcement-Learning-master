@@ -1,11 +1,19 @@
 # TIME:2022/11/2 14:18
 # DEVELOPER:LEOPOLD
+
+import sys
+sys.path.append("..")
+
+from core import my_runner
+import highway_env
+
+
 from single_agent.Model_common import ActorNetwork, CriticNetwork
 import torch
 from single_agent.Memory_common import OnPolicyReplayMemory
 import gym
 import numpy as np
-import highway_env
+# import highway_env
 import random
 env = gym.make('merge-multi-agent-v0')
 n_agent = len(env.controlled_vehicles)

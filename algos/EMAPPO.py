@@ -19,8 +19,12 @@ from single_agent.Model_common import ActorNetwork, CriticNetwork
 from single_agent.utils_common import identity, to_tensor_var
 from single_agent.Memory_common import OnPolicyReplayMemory
 
+import sys
+sys.path.append("..")
+
+
 import numpy as np, os, time, random, torch, sys
-from algos.neuroevolution import SSNE
+from neuroevolution import SSNE
 from core import utils
 from core.my_runner_ppo import rollout_worker
 from torch.multiprocessing import Process, Pipe, Manager
@@ -343,8 +347,8 @@ class My_AL:
         plt.ylabel("Average Reward")
         plt.legend(["EMAPPO"])
         plt.show()
-        np.save(r'D:\Software\work\PyCharm\Workspace\Debug\Evolutionary-Reinforcement-Learning-master'
-                r'\Results\eval_reward\eval_rewards_emappo1.npy', eval_rewards)
+        # np.save(r'D:\Software\work\PyCharm\Workspace\Debug\Evolutionary-Reinforcement-Learning-master'
+        #         r'\Results\eval_reward\eval_rewards_emappo1.npy', eval_rewards)
 
         ###Kill all processes
         try:

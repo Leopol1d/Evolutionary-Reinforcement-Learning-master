@@ -1,9 +1,8 @@
-from algos.EMAPPO import My_AL
+from EMAPPO import My_AL
 from single_agent.utils_common import agg_double_list
 
 import sys
-# sys.path.append("../highway-env")
-
+sys.path.append("..")
 
 import gym
 import numpy as np
