@@ -52,8 +52,9 @@ class My_AL:
                  actor_lr=0.0001, critic_lr=0.0001, test_seeds=0,
                  optimizer_type="rmsprop", entropy_reg=0.01,
                  max_grad_norm=0.5, batch_size=100, episodes_before_train=100,
-                 use_cuda=True, traffic_density=1, reward_type="global_R", pop_size=50):
+                 use_cuda=True, traffic_density=1, reward_type="global_R", pop_size=50, rollout_size=10):
         self.pop_size = pop_size
+        self.rollout_size = rollout_size
         assert traffic_density in [1, 2, 3]
         assert reward_type in ["regionalR", "global_R"]
         self.reward_type = reward_type
@@ -130,7 +131,7 @@ class My_AL:
 
         # Initialize Rollout Bucket
         self.rollout_bucket = self.manager.list()
-        for _ in range(5):
+        for _ in range(self.rollout_size):
             self.rollout_bucket.append(
                 ActorNetwork(self.state_dim, self.actor_hidden_size, self.action_dim, self.actor_output_act))
 
@@ -146,14 +147,14 @@ class My_AL:
         self.evo_flag = [True for _ in range(self.pop_size)]
 
         # Learner rollout workers
-        self.task_pipes = [Pipe() for _ in range(5)]
-        self.result_pipes = [Pipe() for _ in range(5)]
+        self.task_pipes = [Pipe() for _ in range(self.rollout_size)]
+        self.result_pipes = [Pipe() for _ in range(self.rollout_size)]
         self.workers = [Process(target=rollout_worker, args=(
             id, self.task_pipes[id][1], self.result_pipes[id][0], True, self.population, self.critic, self.env,
             self.reward_scale, self.reward_type, self.reward_gamma))
-                        for id in range(5)]
+                        for id in range(self.rollout_size)]
         for worker in self.workers: worker.start()
-        self.roll_flag = [True for _ in range(5)]
+        self.roll_flag = [True for _ in range(self.rollout_size)]
 
         # Test bucket
         self.test_bucket = self.manager.list()
@@ -177,73 +178,43 @@ class My_AL:
         self.test_score = None;
         self.test_std = None
 
-    def interact(self):
-        gen_max = -float('inf')
-        # Start Evolution rollouts
 
-        for id, actor in enumerate(self.population):
-            self.evo_task_pipes[id][0].send(id)
-
-        # Sync all learners actor to cpu (rollout) actor and start their rollout
-        self.actor.cpu()  # learner的q_network
-        for rollout_id in range(len(self.rollout_bucket)):
-            utils.hard_update(self.rollout_bucket[rollout_id], self.actor)
-            self.task_pipes[rollout_id][0].send(0)
-        self.actor.to(device=self.device)
-
-        all_fitness = []
-
-        for i in range(self.pop_size):
-            _, fitness, _, states, actions, rewards = self.evo_result_pipes[i][1].recv()  # len(actions)=200
-
-            self.memory.push(states, actions, rewards)
-
-            all_fitness.append(fitness)
-
-            self.best_score = max(self.best_score, fitness)
-            gen_max = max(gen_max, fitness)
-
-        ########## JOIN ROLLOUTS FOR LEARNER ROLLOUTS ############
-        rollout_fitness = [];
-
-        for i in range(5):
-            _, fitness, _, states, actions, rewards = self.result_pipes[i][1].recv()
-
-            self.memory.push(states, actions, rewards)
-
-            self.best_score = max(self.best_score, fitness)
-            gen_max = max(gen_max, fitness)
-            rollout_fitness.append(fitness);
-
-        print('self.memory.__len__(): ', self.memory.__len__())
-
-        ######################### END OF PARALLEL ROLLOUTS ################
-
-        ############ FIGURE OUT THE CHAMP POLICY AND SYNC IT TO TEST #############
-        champ_index = all_fitness.index(max(all_fitness))
-        utils.hard_update(self.test_bucket[0], self.population[champ_index])
-        if max(all_fitness) > self.best_score:
-            self.best_score = max(all_fitness)
-            utils.hard_update(self.best_policy, self.population[champ_index])
-            torch.save(self.population[champ_index].state_dict(), '_best')
-            print("Best policy saved with score", '%.2f' % max(all_fitness))
-
-        # self.evolver.epoch(gen, self.population, all_fitness, self.rollout_bucket)
 
     def forward_generation(self, gen):
         gen_max = -float('inf')
 
         # Start Evolution rollouts
+        while self.memory.__len__() < self.episodes_before_train:
+            for id, actor in enumerate(self.population):
+                self.evo_task_pipes[id][0].send(id)
 
-        for id, actor in enumerate(self.population):
-            self.evo_task_pipes[id][0].send(id)
+            # Sync all learners actor to cpu (rollout) actor and start their rollout
+            self.actor.cpu()  # learner的q_network
+            for rollout_id in range(len(self.rollout_bucket)):
+                utils.hard_update(self.rollout_bucket[rollout_id], self.actor)
+                self.task_pipes[rollout_id][0].send(0)
+            self.actor.to(device=self.device)
+            ########## JOIN ROLLOUTS FOR EVO POPULATION ############
+            all_fitness = []
 
-        # Sync all learners actor to cpu (rollout) actor and start their rollout
-        self.actor.cpu()  # learner的q_network
-        for rollout_id in range(len(self.rollout_bucket)):
-            utils.hard_update(self.rollout_bucket[rollout_id], self.actor)
-            self.task_pipes[rollout_id][0].send(0)
-        self.actor.to(device=self.device)
+            for i in range(self.pop_size):
+                _, fitness, _, states, actions, rewards = self.evo_result_pipes[i][1].recv()
+                self.memory.push(states, actions, rewards)
+
+                all_fitness.append(fitness)
+
+                self.best_score = max(self.best_score, fitness)
+                gen_max = max(gen_max, fitness)
+
+            ########## JOIN ROLLOUTS FOR LEARNER ROLLOUTS ############
+            rollout_fitness = []
+
+            for i in range(self.rollout_size):
+                _, fitness, _, states, actions, rewards = self.result_pipes[i][1].recv()
+                self.memory.push(states, actions, rewards)
+                self.best_score = max(self.best_score, fitness)
+                gen_max = max(gen_max, fitness)
+                rollout_fitness.append(fitness)
 
         # Start Test rollouts
         if gen % 2 == 0:
@@ -252,43 +223,25 @@ class My_AL:
 
         ############# UPDATE PARAMS USING GRADIENT DESCENT ##########
 
-        if self.memory.__len__() >= self.episodes_before_train:
-            print('training......')
-            for _ in range(1):
-                self.bp(self.actor, self.actor_optimizer, update_target=True)
-
-        ########## JOIN ROLLOUTS FOR EVO POPULATION ############
-        all_fitness = []
-
-        for i in range(self.pop_size):
-            _, fitness, _, states, actions, rewards = self.evo_result_pipes[i][1].recv()
-            self.memory.push(states, actions, rewards)
-
-            all_fitness.append(fitness)
-
-            self.best_score = max(self.best_score, fitness)
-            gen_max = max(gen_max, fitness)
-
-        ########## JOIN ROLLOUTS FOR LEARNER ROLLOUTS ############
-        rollout_fitness = [];
-
-        for i in range(5):
-            _, fitness, _, states, actions, rewards = self.result_pipes[i][1].recv()
-            self.memory.push(states, actions, rewards)
-            self.best_score = max(self.best_score, fitness)
-            gen_max = max(gen_max, fitness)
-            rollout_fitness.append(fitness);
+        print('training......')
+        for _ in range(1):
+            self.bp(self.actor, self.actor_optimizer, update_target=True)
 
         ######################### END OF PARALLEL ROLLOUTS ################
 
         ############ FIGURE OUT THE CHAMP POLICY AND SYNC IT TO TEST #############
         champ_index = all_fitness.index(max(all_fitness))
+
+        loser_index = all_fitness.index(min(all_fitness))
+        utils.hard_update(self.population[loser_index], self.actor)
+
         utils.hard_update(self.test_bucket[0], self.population[champ_index])
+        print('max_fitness: %.2f, best_score: %.2f' % (max(all_fitness), self.best_score))
         if max(all_fitness) > self.best_score:
             self.best_score = max(all_fitness)
             utils.hard_update(self.best_policy, self.population[champ_index])
             torch.save(self.population[champ_index].state_dict(), '_best')
-            print("Best policy saved with score", '%.2f' % max(all_fitness))
+            print("Break Through! Best policy saved with score", '%.2f' % max(all_fitness))
 
         ###### TEST SCORE ######
         if self.test_flag:
@@ -319,9 +272,6 @@ class My_AL:
 
         for gen in range(1, Max_EPISODES + 1):
 
-            while self.memory.__len__() < self.episodes_before_train:
-                self.interact()
-
             max_fitness, test_mean, test_std, rollout_fitness = self.forward_generation(gen)
             if test_mean: self.writer.add_scalar('test_score', test_mean, gen)
 
@@ -331,14 +281,26 @@ class My_AL:
                   utils.pprint(test_std))
 
             if gen % 5 == 0:
-                rewards, (vehicle_speed, vehicle_position), steps, avg_speeds = self.evaluation(self.env)
+                rewards, (vehicle_speed, vehicle_position), steps, avg_speeds = self.evaluation(self.best_policy, self.env)
                 rewards_mu, rewards_std = agg_double_list(rewards)
-                print("Gen %d, Average Reward %.2f" % (gen, rewards_mu))
+                print("Gen %d, Best Policy Average Reward %.2f" % (gen, rewards_mu))
 
                 print('Best_score_ever:''/', '%.2f' % self.best_score)
                 print()
                 # episodes.append(madqn.n_episodes + 1)
                 self.eval_rewards.append(rewards_mu)
+
+                self.actor.cpu()  # learner的q_network
+                rewards, (vehicle_speed, vehicle_position), steps, avg_speeds = self.evaluation(self.actor, self.env)
+                rewards_mu, rewards_std = agg_double_list(rewards)
+                print("Gen %d, Actor Average Reward %.2f" % (gen, rewards_mu))
+
+                print('Best_score_ever:''/', '%.2f' % self.best_score)
+                print()
+                # episodes.append(madqn.n_episodes + 1)
+                self.eval_rewards.append(rewards_mu)
+                self.actor.to(device=self.device)
+
 
         plt.figure()
         eval_rewards = np.array(self.eval_rewards)
@@ -358,30 +320,7 @@ class My_AL:
         except:
             None
 
-    # def evaluation(self, eval_episodes=3):
-    #     # self.env.close() # 先把训练env关闭，不然打开测试env会报错(只允许一个env存在)
-    #     rewards = []
-    #     infos = []
-    #     for i in range(eval_episodes):
-    #         rewards_i = []
-    #         infos_i = []
-    #         state, _ = self.env.reset()
-    #         state = torch.FloatTensor(state)
-    #         done = False
-    #         while not done:
-    #             # self.env.render()
-    #             V = self.best_policy(state)
-    #             V = V.data.numpy()
-    #             action = np.argmax(V, axis=1)
-    #             state, reward, done, info = self.env.step(action)
-    #             state = torch.FloatTensor(state)
-    #             done = done[0] if isinstance(done, list) else done
-    #             rewards_i.append(reward)
-    #             infos_i.append(info)
-    #         rewards.append(rewards_i)
-    #         infos.append(infos_i)
-    #     # self.env.close()
-    #     return rewards, infos
+
 
     def _soft_update_target(self, target, source):
         for t, s in zip(target.parameters(), source.parameters()):
@@ -437,7 +376,7 @@ class My_AL:
                 self._soft_update_target(self.actor_target, actor)
                 self._soft_update_target(self.critic_target, self.critic)
 
-    def evaluation(self, env, eval_episodes=1, is_train=True):
+    def evaluation(self, policy, env, eval_episodes=1, is_train=True):
         rewards = []
         infos = []
         avg_speeds = []
@@ -466,7 +405,7 @@ class My_AL:
 
             while not done:
                 step += 1
-                action = self.action(state, n_agents, self.best_policy)
+                action = self.action(state, n_agents, policy)
                 state, reward, done, info = env.step(action)
                 avg_speed += info["average_speed"]
 
