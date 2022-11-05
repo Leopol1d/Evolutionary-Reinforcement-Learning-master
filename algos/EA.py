@@ -276,35 +276,56 @@ class EA:
 	# 			if random.random() < 0.90:
 	# 				self.mutate_inplace(pop[net_i])
 
-	def epoch(self, gen, pop, fitness_evals, migration):
+	def epoch(self, gen, pop, pop_fitness, migration, mig_fitness, best_policy):
 
-		n_pop = len(fitness_evals)
+		n_pop = len(pop_fitness)
 		self.gen+= 1;
-		num_elitists = int(0.2 * len(fitness_evals))
+		num_elitists = int(0.2 * len(pop_fitness))
 		if num_elitists < 2:
 			num_elitists = 2
 
 		# Entire epoch is handled with indices; Index rank nets by fitness evaluation (0 is the best after reversing)
-		index_rank = self.list_argsort(fitness_evals);
+		index_rank = self.list_argsort(pop_fitness);
 		index_rank.reverse()
-		elitist_index = index_rank[:num_elitists]  # Elitist indexes safeguard
+		elitist_index = index_rank[:num_elitists]  # Elitist indexes safeguard 1-10
 		# loser_index = index_rank[-num_elitists:]
 		# elitist mutation
-		elitist_mut_index = index_rank[-num_elitists:]
+		elitist_mut_index = index_rank[-num_elitists:] # 41-50
 		for i, j in zip(elitist_mut_index, elitist_index):
 			utils.hard_update(target=pop[i], source=pop[j])
-		for i in elitist_mut_index:
 			self.mutate_inplace(pop[i])
 
 		# migration
-		migration_index = index_rank[-(num_elitists+len(migration)): -num_elitists]
-		for i, j in zip(migration_index, range(len(migration_index))):
-			utils.hard_update(target=pop[i], source=migration[j])
+		mean_pop_fitness = np.mean(pop_fitness)
+		migration_index = index_rank[-(num_elitists + len(migration)): -num_elitists]  # 31-40
+		migration_mut_index = index_rank[-(num_elitists + len(migration) + len(migration)): -(
+				num_elitists + len(migration))]  # 21-30
 
-		# migration_mutation
-		migration_mut_index = index_rank[-(num_elitists+len(migration)+len(migration)): -(num_elitists+len(migration))]
-		for i in migration_mut_index:
+
+		if mig_fitness[0] > mean_pop_fitness:
+			for i, j in zip(migration_index, range(len(migration_index))):
+				utils.hard_update(target=pop[i], source=migration[j])
+			for i, j in zip(migration_mut_index, range(len(migration_index))):
+				utils.hard_update(target=pop[i], source=migration[j])
+				self.mutate_inplace(pop[i])
+		else:
+			for i, j in zip(migration_index, migration_mut_index):
+				self.mutate_inplace(pop[i])
+				self.mutate_inplace(pop[j])
+
+
+
+
+		# 11-20
+
+		best_policy_mut_index = index_rank[num_elitists:2*num_elitists]
+		for i in best_policy_mut_index:
+			utils.hard_update(target=pop[i], source=best_policy)
 			self.mutate_inplace(pop[i])
+		utils.hard_update(target=pop[best_policy_mut_index[0]], source=best_policy)
+
+	# for i, j in zip():
+
 
 
 

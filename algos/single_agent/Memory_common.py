@@ -39,8 +39,8 @@ class OnPolicyReplayMemory(object):
         batch = Experience(*zip(*transitions))
 
         # reset the memory
-        self.memory = []
-        self.position = 0
+        # self.memory = []
+        # self.position = 0
         return batch
 
     def __len__(self):

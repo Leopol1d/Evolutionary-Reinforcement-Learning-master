@@ -74,6 +74,7 @@ if __name__ == '__main__':
     env.config['MERGING_LANE_COST'] = config.getint('ENV_CONFIG', 'MERGING_LANE_COST')
     env.config['traffic_density'] = config.getint('ENV_CONFIG', 'traffic_density')
     traffic_density = config.getint('ENV_CONFIG', 'traffic_density')
+    print('traffic_density: ', traffic_density)
     env.config['action_masking'] = config.getboolean('MODEL_CONFIG', 'action_masking')
     print(env.T, ROLL_OUT_N_STEPS)
     assert env.T % ROLL_OUT_N_STEPS == 0
@@ -93,4 +94,4 @@ if __name__ == '__main__':
                   max_grad_norm=MAX_GRAD_NORM, test_seeds=test_seeds,
                   episodes_before_train=EPISODES_BEFORE_TRAIN, traffic_density=traffic_density,
                   pop_size=10)
-    my_al.train(200)
+    my_al.train(1000)
