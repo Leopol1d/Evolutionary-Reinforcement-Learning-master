@@ -1,4 +1,5 @@
 from EMAPPO import My_AL
+from mappo import MAPPO
 from single_agent.utils_common import agg_double_list
 
 import sys
@@ -38,6 +39,17 @@ if __name__ == '__main__':
     config_dir = args.config_dir
     config = configparser.ConfigParser()
     config.read(config_dir)
+
+    # create an experiment folder
+    now = datetime.utcnow().strftime("%b_%d_%H_%M_%S")
+    output_dir = base_dir + now
+    dirs = init_dir(output_dir)
+    copy_file_ppo(dirs['configs'])
+
+    if os.path.exists(args.model_dir):
+        model_dir = args.model_dir
+    else:
+        model_dir = dirs['models']
 
     # model configs
     BATCH_SIZE = config.getint('MODEL_CONFIG', 'BATCH_SIZE')
@@ -79,11 +91,26 @@ if __name__ == '__main__':
     print(env.T, ROLL_OUT_N_STEPS)
     assert env.T % ROLL_OUT_N_STEPS == 0
 
+    env_eval = gym.make('merge-multi-agent-v0')
+    env_eval.config['seed'] = config.getint('ENV_CONFIG', 'seed') + 1
+    env_eval.config['simulation_frequency'] = config.getint('ENV_CONFIG', 'simulation_frequency')
+    env_eval.config['duration'] = config.getint('ENV_CONFIG', 'duration')
+    env_eval.config['policy_frequency'] = config.getint('ENV_CONFIG', 'policy_frequency')
+    env_eval.config['COLLISION_REWARD'] = config.getint('ENV_CONFIG', 'COLLISION_REWARD')
+    env_eval.config['HIGH_SPEED_REWARD'] = config.getint('ENV_CONFIG', 'HIGH_SPEED_REWARD')
+    env_eval.config['HEADWAY_COST'] = config.getint('ENV_CONFIG', 'HEADWAY_COST')
+    env_eval.config['HEADWAY_TIME'] = config.getfloat('ENV_CONFIG', 'HEADWAY_TIME')
+    env_eval.config['MERGING_LANE_COST'] = config.getint('ENV_CONFIG', 'MERGING_LANE_COST')
+    env_eval.config['traffic_density'] = config.getint('ENV_CONFIG', 'traffic_density')
+    env_eval.config['action_masking'] = config.getboolean('MODEL_CONFIG', 'action_masking')
+
+
+
     state_dim = env.n_s
     action_dim = env.n_a
     test_seeds = args.evaluation_seeds
 
-    my_al = My_AL(env=env, memory_capacity=MEMORY_CAPACITY,
+    my_al = My_AL(env=env, env_eval=env_eval, memory_capacity=MEMORY_CAPACITY,
                   state_dim=state_dim, action_dim=action_dim,
                   batch_size=BATCH_SIZE, entropy_reg=ENTROPY_REG,
                   roll_out_n_steps=ROLL_OUT_N_STEPS,
@@ -93,5 +120,18 @@ if __name__ == '__main__':
                   reward_gamma=reward_gamma, reward_type=reward_type,
                   max_grad_norm=MAX_GRAD_NORM, test_seeds=test_seeds,
                   episodes_before_train=EPISODES_BEFORE_TRAIN, traffic_density=traffic_density,
-                  pop_size=10)
-    my_al.train(1000)
+                  pop_size=20, rollout_size=5,dirs=dirs)
+    my_al.train(200)
+
+    # my_al = MAPPO(env=env, memory_capacity=MEMORY_CAPACITY,
+    #               state_dim=state_dim, action_dim=action_dim,
+    #               batch_size=BATCH_SIZE, entropy_reg=ENTROPY_REG,
+    #               roll_out_n_steps=ROLL_OUT_N_STEPS,
+    #               actor_hidden_size=actor_hidden_size, critic_hidden_size=critic_hidden_size,
+    #               actor_lr=actor_lr, critic_lr=critic_lr, reward_scale=reward_scale,
+    #               target_update_steps=TARGET_UPDATE_STEPS, target_tau=TARGET_TAU,
+    #               reward_gamma=reward_gamma, reward_type=reward_type,
+    #               max_grad_norm=MAX_GRAD_NORM, test_seeds=test_seeds,
+    #               episodes_before_train=EPISODES_BEFORE_TRAIN, traffic_density=traffic_density,
+    #               pop_size=10)
+    # my_al.train(1000)
