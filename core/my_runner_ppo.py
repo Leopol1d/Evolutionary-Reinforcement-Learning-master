@@ -62,9 +62,10 @@ def rollout_worker(id, task_pipe, result_pipe, store_data, model_bucket,
             final_action = clean_action(state, n_agents, net)
             final_value = value(final_state, final_action, env, n_agents, critic)
 
-        if reward_scale > 0:
-            rewards = np.array(rewards) / reward_scale
-
+        # if reward_scale > 0:
+        #     rewards = np.array(rewards) / reward_scale
+        rewards = np.array(rewards)
+        fitness = fitness / reward_scale
         if store_data:
             for agent_id in range(n_agents):
                 rewards[:, agent_id] = _discount_reward(rewards[:, agent_id], final_value[agent_id], reward_gamma)

@@ -20,8 +20,9 @@ from single_agent.utils_common import identity, to_tensor_var
 from single_agent.Memory_common import OnPolicyReplayMemory
 
 import sys
-sys.path.append("..")
 
+sys.path.append("..")
+from single_agent.utils import agg_double_list, VideoRecorder
 
 import numpy as np, os, time, random, torch, sys
 from neuroevolution import SSNE
@@ -42,7 +43,7 @@ class My_AL:
     reference: https://github.com/ChenglongChen/pytorch-DRL
     """
 
-    def __init__(self, env, state_dim, action_dim,
+    def __init__(self, env, env_eval,state_dim, action_dim,
                  memory_capacity=10000, max_steps=None,
                  roll_out_n_steps=1, target_tau=1.,
                  target_update_steps=5, clip_param=0.2,
@@ -52,13 +53,18 @@ class My_AL:
                  actor_lr=0.0001, critic_lr=0.0001, test_seeds=0,
                  optimizer_type="rmsprop", entropy_reg=0.01,
                  max_grad_norm=0.5, batch_size=100, episodes_before_train=100,
-                 use_cuda=True, traffic_density=2, reward_type="global_R", pop_size=50, rollout_size=10):
+                 use_cuda=True, traffic_density=2, reward_type="global_R",
+                 pop_size=50, rollout_size=10, dirs=None):
+        self.dirs = dirs
         self.pop_size = pop_size
         self.rollout_size = rollout_size
+        self.exceed_times = 0
+
         assert traffic_density in [1, 2, 3]
         assert reward_type in ["regionalR", "global_R"]
         self.reward_type = reward_type
         self.env = env
+        self.env_eval = env_eval
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.env_state, self.action_mask = self.env.reset()
@@ -86,7 +92,9 @@ class My_AL:
         self.target_tau = target_tau
         self.target_update_steps = target_update_steps
         self.clip_param = clip_param
-        self.eval_rewards = []
+        self.eval_rewards = [-50]
+        self.actor_rewards = [0]
+        self.eval_best_policy_flag = False
         self.actor = ActorNetwork(self.state_dim, self.actor_hidden_size,
                                   self.action_dim, self.actor_output_act)
         self.critic = CriticNetwork(self.state_dim, self.action_dim, self.critic_hidden_size, 1)
@@ -178,13 +186,12 @@ class My_AL:
         self.test_score = None;
         self.test_std = None
 
-
-
     def forward_generation(self, gen):
         gen_max = -float('inf')
-
+        applicant = None
+        applicant_fitness = -float('inf')
         # Start Evolution rollouts
-    # while self.memory.__len__() < self.episodes_before_train:
+        # while self.memory.__len__() < self.episodes_before_train:
         for id, actor in enumerate(self.population):
             self.evo_task_pipes[id][0].send(id)
 
@@ -203,7 +210,7 @@ class My_AL:
 
             all_fitness.append(fitness)
 
-            self.best_score = max(self.best_score, fitness)
+            # self.best_score = max(self.best_score, fitness)
             gen_max = max(gen_max, fitness)
 
         ########## JOIN ROLLOUTS FOR LEARNER ROLLOUTS ############
@@ -212,7 +219,7 @@ class My_AL:
         for i in range(self.rollout_size):
             _, fitness, _, states, actions, rewards = self.result_pipes[i][1].recv()
             self.memory.push(states, actions, rewards)
-            self.best_score = max(self.best_score, fitness)
+            # self.best_score = max(self.best_score, fitness)
             gen_max = max(gen_max, fitness)
             rollout_fitness.append(fitness)
 
@@ -222,8 +229,8 @@ class My_AL:
             for pipe in self.test_task_pipes: pipe[0].send(0)
 
         ############# UPDATE PARAMS USING GRADIENT DESCENT ##########
-
-        print('training......')
+        print()
+        # print('training...... pop size:', self.pop_size)
         for _ in range(10):
             self.bp(self.actor, self.actor_optimizer, update_target=True)
 
@@ -233,13 +240,12 @@ class My_AL:
         champ_index = all_fitness.index(max(all_fitness))
 
         utils.hard_update(self.test_bucket[0], self.population[champ_index])
-        print('Interacted max_fitness: %.2f, best_score: %.2f' % (max(all_fitness), self.best_score))
+        print('Gen: %d, Interacted max_fitness: %.2f, best_score: %.2f' % (gen, max(all_fitness), self.best_score))
         max_pop_fitness = max(all_fitness)
         if max_pop_fitness > self.best_score:
-            self.best_score = max_pop_fitness
-            utils.hard_update(self.best_policy, self.population[champ_index])
-            torch.save(self.population[champ_index].state_dict(), '_best')
-            print("Break Through! Best policy saved with score", '%.2f' % max(all_fitness))
+            # utils.hard_update(self.best_policy, self.population[champ_index])
+            # torch.save(self.population[champ_index].state_dict(), '_best')
+            print('Elitist exceed the best policy!')
 
         ###### TEST SCORE ######
         if self.test_flag:
@@ -247,18 +253,32 @@ class My_AL:
             test_scores = []
             for pipe in self.test_result_pipes:  # Collect all results
                 _, fitness, _, states, actions, rewards = pipe[1].recv()
-                self.best_score = max(self.best_score, fitness)
                 if fitness > self.best_score:
-                    utils.hard_update(target=self.best_policy, source=self.actor)
-                    print('rollout_bucket exceed the best policy!')
+                    # utils.hard_update(target=self.best_policy, source=self.test_bucket[0])
+                    print('test_bucket exceed the best policy!')
                 gen_max = max(gen_max, fitness)
                 test_scores.append(fitness)
             test_scores = np.array(test_scores)
             test_mean = np.mean(test_scores);
             test_std = (np.std(test_scores))
+            max_test_fitness = max(test_scores)
+
 
         else:
             test_mean, test_std = None, None
+            max_test_fitness = -float('inf')
+
+        if max_pop_fitness > max_test_fitness:
+            applicant = self.population[champ_index]
+            applicant_fitness = max_pop_fitness
+        else:
+            applicant = self.test_bucket[0]
+            applicant_fitness = max_test_fitness
+
+        if applicant_fitness > self.best_score / 5:
+            self.eval_best_policy_flag =True
+        else:
+            applicant = None
 
         # NeuroEvolution's probabilistic selection and recombination step
 
@@ -266,54 +286,75 @@ class My_AL:
 
         # Compute the champion's eplen
 
-        return gen_max, test_mean, test_std, rollout_fitness
+        return gen_max, test_mean, test_std, rollout_fitness, applicant, applicant_fitness
 
     def train(self, Max_EPISODES):
         # Define Tracker class to track scores
 
         for gen in range(1, Max_EPISODES + 1):
 
-            max_fitness, test_mean, test_std, rollout_fitness = self.forward_generation(gen)
+            max_fitness, test_mean, test_std, rollout_fitness, applicant, applicant_fitness = self.forward_generation(gen)
             if test_mean: self.writer.add_scalar('test_score', test_mean, gen)
 
-            print('Gen/Frames:', gen,
-                  ' Gen_max_score:', '%.2f' % max_fitness,
-                  'Test_score u/std', utils.pprint(test_mean),
-                  utils.pprint(test_std))
+            # print('Gen/Frames:', gen,
+            #       ' Gen_max_score:', '%.2f' % max_fitness,
+            #       'Test_score u/std', utils.pprint(test_mean),
+            #       utils.pprint(test_std))
 
-            if gen % 5 == 0:
-                rewards, (vehicle_speed, vehicle_position), steps, avg_speeds = self.evaluation(self.best_policy, self.env)
-                rewards_mu, rewards_std = agg_double_list(rewards)
-                print("Gen %d, Best Policy Average Reward %.2f" % (gen, rewards_mu))
+            if gen % 1 == 0:
 
-                print('Best_score_ever:''/', '%.2f' % self.best_score)
-                print()
-                # episodes.append(madqn.n_episodes + 1)
+                if self.eval_best_policy_flag:
+                    self.eval_best_policy_flag = False
+                    rewards, (vehicle_speed, vehicle_position), steps, avg_speeds = self.evaluation(
+                        self.dirs['train_videos'], applicant, self.env_eval, eval_episodes=3,
+                        is_train=True)
+                    rewards_mu, rewards_std = agg_double_list(rewards)
+                    print("Gen %d, Applicant Average Reward %.2f" % (gen, rewards_mu))
+
+                    if rewards_mu > self.eval_rewards[-1]:
+                        self.exceed_times += 1
+                        utils.hard_update(self.best_policy, applicant)
+                        self.eval_rewards[-1] = rewards_mu
+                        self.best_score = applicant_fitness
+                        print("Break Through! Best policy saved with reward", '%.2f' % rewards_mu)
+                    else:
+                        rewards_mu = self.eval_rewards[-1]
+
+                else:
+                    rewards_mu = self.eval_rewards[-1]
                 self.eval_rewards.append(rewards_mu)
+                print('Best applicant reward ever: %.2f, exceed times: %d' % (self.eval_rewards[-1], self.exceed_times))
 
                 self.actor.cpu()  # learner的q_network
-                rewards, (vehicle_speed, vehicle_position), steps, avg_speeds = self.evaluation(self.actor, self.env)
+                rewards, (vehicle_speed, vehicle_position), steps, avg_speeds = self.evaluation(
+                    self.dirs['train_videos'], self.actor, self.env_eval, eval_episodes=3, is_train=True)
                 rewards_mu_actor, rewards_std = agg_double_list(rewards)
                 print("Gen %d, Actor Average Reward %.2f" % (gen, rewards_mu_actor))
-                print()
-                if rewards_mu_actor > rewards_mu:
+                if rewards_mu_actor > self.eval_rewards[-1]:
                     print('actor exceed the best policy!')
                     utils.hard_update(target=self.best_policy, source=self.actor)
+                    self.eval_rewards[-1] = rewards_mu_actor
+                else:
+                    self._soft_update_target(self.actor, self.best_policy)
                 # episodes.append(madqn.n_episodes + 1)
-                # self.eval_rewards.append(rewards_mu)
+                self.actor_rewards.append(rewards_mu_actor)
                 self.actor.to(device=self.device)
 
-
+        self.save(self.dirs['models'], Max_EPISODES)
         plt.figure()
         eval_rewards = np.array(self.eval_rewards)
+        actor_rewards = np.array(self.actor_rewards)
         plt.plot(eval_rewards)
+        plt.plot(actor_rewards)
         plt.xlabel("Episode")
         plt.ylabel("Average Reward")
-        plt.legend(["EMAPPO"])
+        plt.legend(labels=['best_policy', 'learner'], loc='best')
         plt.show()
-        # np.save(r'D:\Software\work\PyCharm\Workspace\Debug\Evolutionary-Reinforcement-Learning-master'
-        #         r'\Results\eval_reward\eval_rewards_emappo1.npy', eval_rewards)
+        np.save(self.dirs['eval_logs'] + 'best_policy_rewards.npy', eval_rewards)
+        np.save(self.dirs['eval_logs'] + 'learner_rewards.npy', actor_rewards)
 
+        # dir = 'Results/Nov_05_08_08_49/eval_logs/reward.npy'
+        # b = np.load(dir)
         ###Kill all processes
         try:
             for p in self.task_pipes: p[0].send('TERMINATE')
@@ -321,8 +362,6 @@ class My_AL:
             for p in self.evo_task_pipes: p[0].send('TERMINATE')
         except:
             None
-
-
 
     def _soft_update_target(self, target, source):
         for t, s in zip(target.parameters(), source.parameters()):
@@ -378,7 +417,7 @@ class My_AL:
                 self._soft_update_target(self.actor_target, actor)
                 self._soft_update_target(self.critic_target, self.critic)
 
-    def evaluation(self, policy, env, eval_episodes=1, is_train=True):
+    def evaluation(self, output_dir, policy, env, eval_episodes=3, is_train=True):
         rewards = []
         infos = []
         avg_speeds = []
@@ -386,6 +425,8 @@ class My_AL:
         vehicle_speed = []
         vehicle_position = []
         seeds = [int(s) for s in self.test_seeds.split(',')]
+
+        video_recorder = None
 
         for i in range(eval_episodes):
             avg_speed = 0
@@ -395,22 +436,43 @@ class My_AL:
             done = False
             if is_train:
                 if self.traffic_density == 1:
-                    state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i], num_CAV=i + 1)
+                    state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i+1], num_CAV=i + 1)
                 elif self.traffic_density == 2:
-                    state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i], num_CAV=i + 2)
+                    state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i+1], num_CAV=i + 2)
                 elif self.traffic_density == 3:
-                    state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i], num_CAV=i + 4)
+                    state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i+1], num_CAV=i + 4)
             else:
-                state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i])
+                state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i+1])
 
             n_agents = len(env.controlled_vehicles)
+            # rendered_frame = env.render(mode="rgb_array")
+            # if policy == self.best_policy:
+            #     video_filename = os.path.join(output_dir,
+            #                                   "best_policy_testing_episode{}".format(
+            #                                       self.n_episodes + 1) + '_{}'.format(i) +
+            #                                   '.mp4')
+            # else:
+            #     video_filename = os.path.join(output_dir,
+            #                                   "learner_testing_episode{}".format(
+            #                                       self.n_episodes + 1) + '_{}'.format(i) +
+            #                                   '.mp4')
+
+            # if video_filename is not None:
+            #     # print("Recording video to {} ({}x{}x{}@{}fps)".format(video_filename, *rendered_frame.shape, 5))
+            #     video_recorder = VideoRecorder(video_filename,
+            #                                    frame_size=rendered_frame.shape, fps=5)
+            #     video_recorder.add_frame(rendered_frame)
+            # else:
+            #     video_recorder = None
 
             while not done:
                 step += 1
                 action = self.action(state, n_agents, policy)
                 state, reward, done, info = env.step(action)
                 avg_speed += info["average_speed"]
-
+                # rendered_frame = env.render(mode="rgb_array")
+                # if video_recorder is not None:
+                #     video_recorder.add_frame(rendered_frame)
                 rewards_i.append(reward)
                 infos_i.append(info)
 
@@ -420,7 +482,10 @@ class My_AL:
             infos.append(infos_i)
             steps.append(step)
             avg_speeds.append(avg_speed / step)
-
+            #
+            # if video_recorder is not None:
+            #     video_recorder.release()
+            # env.close()
         return rewards, (vehicle_speed, vehicle_position), steps, avg_speeds
 
     def action(self, state, n_agents, net):
@@ -441,3 +506,41 @@ class My_AL:
             softmax_action.append(softmax_action_var.data.numpy()[0])
 
         return softmax_action
+
+    def load(self, model_dir, global_step=None, train_mode=False):
+        save_file = None
+        save_step = 0
+        if os.path.exists(model_dir):
+            if global_step is None:
+                for file in os.listdir(model_dir):
+                    if file.startswith('checkpoint'):
+                        tokens = file.split('.')[0].split('-')
+                        if len(tokens) != 2:
+                            continue
+                        cur_step = int(tokens[1])
+                        if cur_step > save_step:
+                            save_file = file
+                            save_step = cur_step
+            else:
+                save_file = 'checkpoint-{:d}.pt'.format(global_step)
+        if save_file is not None:
+            file_path = model_dir + save_file
+            checkpoint = th.load(file_path)
+            print('Checkpoint loaded: {}'.format(file_path))
+            self.actor.load_state_dict(checkpoint['model_state_dict'])
+            if train_mode:
+                self.actor_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                self.actor.train()
+            else:
+                self.actor.eval()
+            return True
+        logging.error('Can not find checkpoint for {}'.format(model_dir))
+        return False
+
+    def save(self, model_dir, global_step):
+        file_path = model_dir + 'checkpoint-{:d}.pt'.format(global_step)
+        th.save({'global_step': global_step,
+                 'model_state_dict': self.actor.state_dict(),
+                 'optimizer_state_dict': self.actor_optimizer.state_dict(),
+                 'best_policy': self.best_policy.state_dict()},
+                file_path)
