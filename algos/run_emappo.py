@@ -1,3 +1,5 @@
+import torch
+
 from EMAPPO import My_AL
 from mappo import MAPPO
 from single_agent.utils_common import agg_double_list
@@ -39,6 +41,11 @@ if __name__ == '__main__':
     config_dir = args.config_dir
     config = configparser.ConfigParser()
     config.read(config_dir)
+
+    torch_seed = config.getint('MODEL_CONFIG', 'torch_seed')
+    torch.manual_seed(torch_seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True  # 每次返回的卷积算法将是确定的
 
     # create an experiment folder
     now = datetime.utcnow().strftime("%b_%d_%H_%M_%S")
@@ -109,7 +116,11 @@ if __name__ == '__main__':
     state_dim = env.n_s
     action_dim = env.n_a
     test_seeds = args.evaluation_seeds
-
+    pop_size = 20
+    rollout_size = 2
+    print('BATCH_SIZE: ', BATCH_SIZE, 'pop_size: ', pop_size, 'rollout_size: ', rollout_size)
+    import time
+    tic = time.time()
     my_al = My_AL(env=env, env_eval=env_eval, memory_capacity=MEMORY_CAPACITY,
                   state_dim=state_dim, action_dim=action_dim,
                   batch_size=BATCH_SIZE, entropy_reg=ENTROPY_REG,
@@ -120,7 +131,8 @@ if __name__ == '__main__':
                   reward_gamma=reward_gamma, reward_type=reward_type,
                   max_grad_norm=MAX_GRAD_NORM, test_seeds=test_seeds,
                   episodes_before_train=EPISODES_BEFORE_TRAIN, traffic_density=traffic_density,
-                  pop_size=20, rollout_size=5,dirs=dirs)
+                  pop_size=pop_size, rollout_size=rollout_size,dirs=dirs)
+    print('Times: %.2f' % (time.time() - tic))
     my_al.train(1)
 
     # my_al = MAPPO(env=env, memory_capacity=MEMORY_CAPACITY,

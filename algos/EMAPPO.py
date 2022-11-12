@@ -43,7 +43,7 @@ class My_AL:
     reference: https://github.com/ChenglongChen/pytorch-DRL
     """
 
-    def __init__(self, env, env_eval,state_dim, action_dim,
+    def __init__(self, env, env_eval, state_dim, action_dim,
                  memory_capacity=10000, max_steps=None,
                  roll_out_n_steps=1, target_tau=1.,
                  target_update_steps=5, clip_param=0.2,
@@ -92,8 +92,9 @@ class My_AL:
         self.target_tau = target_tau
         self.target_update_steps = target_update_steps
         self.clip_param = clip_param
-        self.eval_rewards = [-50]
+        # self.eval_rewards = [-50]
         self.actor_rewards = [0]
+        self.average_speed = [0]
         self.eval_best_policy_flag = False
         self.actor = ActorNetwork(self.state_dim, self.actor_hidden_size,
                                   self.action_dim, self.actor_output_act)
@@ -230,7 +231,8 @@ class My_AL:
 
         ############# UPDATE PARAMS USING GRADIENT DESCENT ##########
         print()
-        # print('training...... pop size:', self.pop_size)
+
+        self.n_episodes += 1
         for _ in range(10):
             self.bp(self.actor, self.actor_optimizer, update_target=True)
 
@@ -268,21 +270,22 @@ class My_AL:
             test_mean, test_std = None, None
             max_test_fitness = -float('inf')
 
-        if max_pop_fitness > max_test_fitness:
-            applicant = self.population[champ_index]
-            applicant_fitness = max_pop_fitness
-        else:
-            applicant = self.test_bucket[0]
-            applicant_fitness = max_test_fitness
-
-        if applicant_fitness > self.best_score / 5:
-            self.eval_best_policy_flag =True
-        else:
-            applicant = None
+        # if max_pop_fitness > max_test_fitness:
+        #     applicant = self.population[champ_index]
+        #     applicant_fitness = max_pop_fitness
+        # else:
+        #     applicant = self.test_bucket[0]
+        #     applicant_fitness = max_test_fitness
+        #
+        # if applicant_fitness > self.best_score / 5:
+        #     self.eval_best_policy_flag =True
+        # else:
+        #     applicant = None
 
         # NeuroEvolution's probabilistic selection and recombination step
 
-        self.evolver.epoch(gen, self.population, all_fitness, self.rollout_bucket, rollout_fitness, self.best_policy)
+        # self.evolver.epoch(gen, self.population, all_fitness, self.rollout_bucket, rollout_fitness, self.best_policy)
+        self.evolver.epoch1(gen, self.population, all_fitness, self.rollout_bucket, rollout_fitness)
 
         # Compute the champion's eplen
 
@@ -296,62 +299,60 @@ class My_AL:
             max_fitness, test_mean, test_std, rollout_fitness, applicant, applicant_fitness = self.forward_generation(gen)
             if test_mean: self.writer.add_scalar('test_score', test_mean, gen)
 
-            # print('Gen/Frames:', gen,
-            #       ' Gen_max_score:', '%.2f' % max_fitness,
-            #       'Test_score u/std', utils.pprint(test_mean),
-            #       utils.pprint(test_std))
+            if gen % 10 == 0:
 
-            if gen % 1 == 0:
-
-                if self.eval_best_policy_flag:
-                    self.eval_best_policy_flag = False
-                    rewards, (vehicle_speed, vehicle_position), steps, avg_speeds = self.evaluation(
-                        self.dirs['train_videos'], applicant, self.env_eval, eval_episodes=3,
-                        is_train=True)
-                    rewards_mu, rewards_std = agg_double_list(rewards)
-                    print("Gen %d, Applicant Average Reward %.2f" % (gen, rewards_mu))
-
-                    if rewards_mu > self.eval_rewards[-1]:
-                        self.exceed_times += 1
-                        utils.hard_update(self.best_policy, applicant)
-                        self.eval_rewards[-1] = rewards_mu
-                        self.best_score = applicant_fitness
-                        print("Break Through! Best policy saved with reward", '%.2f' % rewards_mu)
-                    else:
-                        rewards_mu = self.eval_rewards[-1]
-
-                else:
-                    rewards_mu = self.eval_rewards[-1]
-                self.eval_rewards.append(rewards_mu)
-                print('Best applicant reward ever: %.2f, exceed times: %d' % (self.eval_rewards[-1], self.exceed_times))
+                # if self.eval_best_policy_flag:
+                #     self.eval_best_policy_flag = False
+                #     rewards, (vehicle_speed, vehicle_position), steps, avg_speeds = self.evaluation(
+                #         self.dirs['train_videos'], applicant, self.env_eval, eval_episodes=3,
+                #         is_train=True)
+                #     rewards_mu, rewards_std = agg_double_list(rewards)
+                #     print("Gen %d, Applicant Average Reward %.2f" % (gen, rewards_mu))
+                #
+                #     if rewards_mu > self.eval_rewards[-1]:
+                #         self.exceed_times += 1
+                #         utils.hard_update(self.best_policy, applicant)
+                #         self.eval_rewards[-1] = rewards_mu
+                #         self.best_score = applicant_fitness
+                #         print("Break Through! Best policy saved with reward", '%.2f' % rewards_mu)
+                #     else:
+                #         rewards_mu = self.eval_rewards[-1]
+                #
+                # else:
+                #     rewards_mu = self.eval_rewards[-1]
+                # self.eval_rewards.append(rewards_mu)
+                # print('Best applicant reward ever: %.2f, exceed times: %d' % (self.eval_rewards[-1], self.exceed_times))
 
                 self.actor.cpu()  # learner的q_network
                 rewards, (vehicle_speed, vehicle_position), steps, avg_speeds = self.evaluation(
                     self.dirs['train_videos'], self.actor, self.env_eval, eval_episodes=3, is_train=True)
                 rewards_mu_actor, rewards_std = agg_double_list(rewards)
-                print("Gen %d, Actor Average Reward %.2f" % (gen, rewards_mu_actor))
-                if rewards_mu_actor > self.eval_rewards[-1]:
-                    print('actor exceed the best policy!')
-                    utils.hard_update(target=self.best_policy, source=self.actor)
-                    self.eval_rewards[-1] = rewards_mu_actor
-                else:
-                    self._soft_update_target(self.actor, self.best_policy)
+                avg_speeds = np.mean(avg_speeds)
+                print("Gen %d, Actor Average Reward %.2f, Avg Speed %.2f" % (gen, rewards_mu_actor, avg_speeds))
+                # if rewards_mu_actor > self.eval_rewards[-1]:
+                #     print('actor exceed the best policy!')
+                #     utils.hard_update(target=self.best_policy, source=self.actor)
+                #     self.eval_rewards[-1] = rewards_mu_actor
                 # episodes.append(madqn.n_episodes + 1)
                 self.actor_rewards.append(rewards_mu_actor)
+                self.average_speed.append(avg_speeds)
                 self.actor.to(device=self.device)
 
         self.save(self.dirs['models'], Max_EPISODES)
-        plt.figure()
-        eval_rewards = np.array(self.eval_rewards)
+        # eval_rewards = np.array(self.eval_rewards)
         actor_rewards = np.array(self.actor_rewards)
-        plt.plot(eval_rewards)
-        plt.plot(actor_rewards)
-        plt.xlabel("Episode")
-        plt.ylabel("Average Reward")
-        plt.legend(labels=['best_policy', 'learner'], loc='best')
-        plt.show()
-        np.save(self.dirs['eval_logs'] + 'best_policy_rewards.npy', eval_rewards)
+        avg_speeds = np.array(self.average_speed)
+        # np.save(self.dirs['eval_logs'] + 'best_policy_rewards.npy', eval_rewards)
         np.save(self.dirs['eval_logs'] + 'learner_rewards.npy', actor_rewards)
+        np.save(self.dirs['eval_logs'] + 'avg_speed.npy', avg_speeds)
+        # plt.figure()
+        # plt.plot(eval_rewards)
+        # plt.plot(actor_rewards)
+        # plt.xlabel("Episode")
+        # plt.ylabel("Average Reward")
+        # plt.legend(labels=['best_policy', 'learner'], loc='best')
+        # plt.show()
+        # np.save(self.dirs['eval_logs'] + 'best_policy_rewards.npy', eval_rewards)
 
         # dir = 'Results/Nov_05_08_08_49/eval_logs/reward.npy'
         # b = np.load(dir)
@@ -368,8 +369,7 @@ class My_AL:
             t.data.copy_(
                 (1. - self.target_tau) * t.data + self.target_tau * s.data)
 
-    def bp(self, actor, actor_optimizer, update_target=False):
-        self.n_episodes += 1
+    def bp(self, actor, actor_optimizer, update_target=True):
         # print('actor == self.actor: ', actor == self.actor)
         batch = self.memory.sample(self.batch_size)
         states_var = to_tensor_var(batch.states, self.use_cuda).view(-1, self.n_agents, self.state_dim)
@@ -442,7 +442,7 @@ class My_AL:
                 elif self.traffic_density == 3:
                     state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i+1], num_CAV=i + 4)
             else:
-                state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i+1])
+                state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i])
 
             n_agents = len(env.controlled_vehicles)
             # rendered_frame = env.render(mode="rgb_array")
@@ -528,6 +528,7 @@ class My_AL:
             checkpoint = th.load(file_path)
             print('Checkpoint loaded: {}'.format(file_path))
             self.actor.load_state_dict(checkpoint['model_state_dict'])
+            self.actor.cpu()
             if train_mode:
                 self.actor_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
                 self.actor.train()

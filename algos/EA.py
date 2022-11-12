@@ -200,81 +200,83 @@ class EA:
 		for param in (gene.parameters()):
 			param.data.copy_(param.data)
 
-	# def epoch(self, gen, pop, fitness_evals, migration):
-	#
-	#
-	# 	self.gen+= 1;
-	# 	num_elitists = int(0.2 * len(fitness_evals))
-	# 	if num_elitists < 2:
-	# 		num_elitists = 2
-	#
-	# 	# Entire epoch is handled with indices; Index rank nets by fitness evaluation (0 is the best after reversing)
-	# 	index_rank = self.list_argsort(fitness_evals);
-	# 	index_rank.reverse()
-	# 	elitist_index = index_rank[:num_elitists]  # Elitist indexes safeguard
-	#
-	# 	# Selection step
-	# 	offsprings = self.selection_tournament(index_rank, num_offsprings=len(index_rank) - len(elitist_index) - len(migration), tournament_size=3)
-	#
-	# 	#Figure out unselected candidates
-	# 	unselects = []; new_elitists = []
-	# 	for net_i in range(len(pop)):
-	# 		if net_i in offsprings or net_i in elitist_index:
-	# 			continue
-	# 		else:
-	# 			unselects.append(net_i)
-	# 	random.shuffle(unselects)
-	#
-	# 	#Migration Tracker
-	# 	if self.rl_policy != None:  # RL Transfer happened
-	# 		self.selection_stats['total'] += 1.0
-	# 		if self.rl_policy in elitist_index:
-	# 			self.selection_stats['elite'] += 1.0
-	# 		elif self.rl_policy in offsprings:
-	# 			self.selection_stats['selected'] += 1.0
-	# 		elif self.rl_policy in unselects:
-	# 			self.selection_stats['discarded'] += 1.0
-	# 		self.rl_policy = None
-	# 		self.writer.add_scalar('elite_rate', self.selection_stats['elite']/self.selection_stats['total'], gen)
-	# 		self.writer.add_scalar('selection_rate', (self.selection_stats['elite']+self.selection_stats['selected'])/self.selection_stats['total'], gen)
-	# 		self.writer.add_scalar('discard_rate', self.selection_stats['discarded']/self.selection_stats['total'], gen)
-	#
-	# 	#Inheritance step (sync learners to population) --> Migration
-	# 	for policy in migration:
-	# 		replacee = unselects.pop(0)
-	# 		utils.hard_update(target=pop[replacee], source=policy)
-	# 		self.rl_policy = replacee
-	#
-	# 	# Elitism step, assigning elite candidates to some unselects
-	# 	for i in elitist_index:
-	# 		try: replacee = unselects.pop(0)
-	# 		except: replacee = offsprings.pop(0)
-	# 		new_elitists.append(replacee)
-	# 		utils.hard_update(target=pop[replacee], source=pop[i])
-	#
-	#
-	# 	# Crossover for unselected genes with 100 percent probability
-	# 	if len(unselects) % 2 != 0:  # Number of unselects left should be even
-	# 		unselects.append(unselects[random.randint(0, len(unselects)-1)])
-	# 	for i, j in zip(unselects[0::2], unselects[1::2]):
-	# 		off_i = random.choice(new_elitists);
-	# 		off_j = random.choice(offsprings)
-	# 		utils.hard_update(target=pop[i], source=pop[off_i])
-	# 		utils.hard_update(target=pop[j], source=pop[off_j])
-	# 		self.crossover_inplace(pop[i], pop[j])
-	#
-	#
-	# 	# Crossover for selected offsprings
-	# 	for i, j in zip(offsprings[0::2], offsprings[1::2]):
-	# 		if random.random() < 0.15:
-	# 			self.crossover_inplace(pop[i], pop[j])
-	#
-	#
-	# 	# Mutate all genes in the population except the new elitists
-	# 	for net_i in range(len(pop)):
-	# 		if net_i not in new_elitists:  # Spare the new elitists
-	# 			if random.random() < 0.90:
-	# 				self.mutate_inplace(pop[net_i])
+	def epoch1(self, gen, pop, fitness_evals, migration, mig_fitness):
+
+
+		self.gen+= 1;
+		num_elitists = int(0.2 * len(fitness_evals))
+		if num_elitists < 2:
+			num_elitists = 2
+
+		# Entire epoch is handled with indices; Index rank nets by fitness evaluation (0 is the best after reversing)
+		index_rank = self.list_argsort(fitness_evals);
+		index_rank.reverse()
+		elitist_index = index_rank[:num_elitists]  # Elitist indexes safeguard
+
+		# Selection step
+		offsprings = self.selection_tournament(index_rank, num_offsprings=len(index_rank) - len(elitist_index) - len(migration), tournament_size=3)
+
+		#Figure out unselected candidates
+		unselects = []; new_elitists = []
+		for net_i in range(len(pop)):
+			if net_i in offsprings or net_i in elitist_index:
+				continue
+			else:
+				unselects.append(net_i)
+		random.shuffle(unselects)
+
+		#Migration Tracker
+		if self.rl_policy != None:  # RL Transfer happened
+			self.selection_stats['total'] += 1.0
+			if self.rl_policy in elitist_index:
+				self.selection_stats['elite'] += 1.0
+			elif self.rl_policy in offsprings:
+				self.selection_stats['selected'] += 1.0
+			elif self.rl_policy in unselects:
+				self.selection_stats['discarded'] += 1.0
+			self.rl_policy = None
+			self.writer.add_scalar('elite_rate', self.selection_stats['elite']/self.selection_stats['total'], gen)
+			self.writer.add_scalar('selection_rate', (self.selection_stats['elite']+self.selection_stats['selected'])/self.selection_stats['total'], gen)
+			self.writer.add_scalar('discard_rate', self.selection_stats['discarded']/self.selection_stats['total'], gen)
+
+		#Inheritance step (sync learners to population) --> Migration
+		mean_pop_fitness = np.mean(fitness_evals)
+		if mig_fitness[0] > mean_pop_fitness:
+			for policy in migration:
+				replacee = unselects.pop(0)
+				utils.hard_update(target=pop[replacee], source=policy)
+				self.rl_policy = replacee
+
+		# Elitism step, assigning elite candidates to some unselects
+		for i in elitist_index:
+			try: replacee = unselects.pop(0)
+			except: replacee = offsprings.pop(0)
+			new_elitists.append(replacee)
+			utils.hard_update(target=pop[replacee], source=pop[i])
+
+
+		# Crossover for unselected genes with 100 percent probability
+		if len(unselects) % 2 != 0:  # Number of unselects left should be even
+			unselects.append(unselects[random.randint(0, len(unselects)-1)])
+		for i, j in zip(unselects[0::2], unselects[1::2]):
+			off_i = random.choice(new_elitists);
+			off_j = random.choice(offsprings)
+			utils.hard_update(target=pop[i], source=pop[off_i])
+			utils.hard_update(target=pop[j], source=pop[off_j])
+			self.crossover_inplace(pop[i], pop[j])
+
+
+		# Crossover for selected offsprings
+		for i, j in zip(offsprings[0::2], offsprings[1::2]):
+			if random.random() < 0.15:
+				self.crossover_inplace(pop[i], pop[j])
+
+
+		# Mutate all genes in the population except the new elitists
+		for net_i in range(len(pop)):
+			if net_i not in new_elitists:  # Spare the new elitists
+				if random.random() < 0.90:
+					self.mutate_inplace(pop[net_i])
 
 	def epoch(self, gen, pop, pop_fitness, migration, mig_fitness, best_policy):
 
@@ -313,9 +315,6 @@ class EA:
 				self.mutate_inplace(pop[i])
 				self.mutate_inplace(pop[j])
 
-
-
-
 		# 11-20
 
 		best_policy_mut_index = index_rank[num_elitists:2*num_elitists]
@@ -323,9 +322,6 @@ class EA:
 			utils.hard_update(target=pop[i], source=best_policy)
 			self.mutate_inplace(pop[i])
 		utils.hard_update(target=pop[best_policy_mut_index[0]], source=best_policy)
-
-	# for i, j in zip():
-
 
 
 
