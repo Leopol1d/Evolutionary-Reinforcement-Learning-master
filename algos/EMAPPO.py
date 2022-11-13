@@ -38,10 +38,6 @@ from EA import EA
 
 
 class My_AL:
-    """
-    An multi-agent learned with DQN
-    reference: https://github.com/ChenglongChen/pytorch-DRL
-    """
 
     def __init__(self, env, env_eval, state_dim, action_dim,
                  memory_capacity=10000, max_steps=None,
@@ -54,12 +50,17 @@ class My_AL:
                  optimizer_type="rmsprop", entropy_reg=0.01,
                  max_grad_norm=0.5, batch_size=100, episodes_before_train=100,
                  use_cuda=True, traffic_density=2, reward_type="global_R",
-                 pop_size=50, rollout_size=10, dirs=None):
+                 pop_size=50, rollout_size=10, dirs=None, max_pop_size=50, weight_magnitude_limit=100000,
+                 elite_fraction=0.2, crossover_prob=0.15, mutation_prob=0.9):
         self.dirs = dirs
         self.pop_size = pop_size
         self.rollout_size = rollout_size
+        self.max_pop_size = max_pop_size
         self.exceed_times = 0
-
+        self.weight_magnitude_limit = weight_magnitude_limit
+        self.elite_fraction = elite_fraction
+        self.crossover_prob = crossover_prob
+        self.mutation_prob = mutation_prob
         assert traffic_density in [1, 2, 3]
         assert reward_type in ["regionalR", "global_R"]
         self.reward_type = reward_type
@@ -92,10 +93,12 @@ class My_AL:
         self.target_tau = target_tau
         self.target_update_steps = target_update_steps
         self.clip_param = clip_param
-        # self.eval_rewards = [-50]
+        self.eval_rewards = [0]
         self.actor_rewards = [0]
         self.average_speed = [0]
         self.eval_best_policy_flag = False
+        self.last_gen_fitness = np.zeros(self.max_pop_size)
+
         self.actor = ActorNetwork(self.state_dim, self.actor_hidden_size,
                                   self.action_dim, self.actor_output_act)
         self.critic = CriticNetwork(self.state_dim, self.action_dim, self.critic_hidden_size, 1)
@@ -127,10 +130,11 @@ class My_AL:
 
         self.manager = Manager()
         # Evolution
-        self.evolver = EA()
+        self.evolver = EA(self.weight_magnitude_limit, self.elite_fraction, self.crossover_prob, self.mutation_prob,
+                          self.pop_size)
 
         self.population = self.manager.list()
-        for _ in range(self.pop_size):
+        for _ in range(self.max_pop_size):
             self.population.append(
                 ActorNetwork(self.state_dim, self.actor_hidden_size, self.action_dim, self.actor_output_act))
 
@@ -146,14 +150,13 @@ class My_AL:
 
         ############## MULTIPROCESSING TOOLS ###################
         # Evolutionary population Rollout workers
-        self.evo_task_pipes = [Pipe() for _ in range(self.pop_size)]
-        self.evo_result_pipes = [Pipe() for _ in range(self.pop_size)]
+        self.evo_task_pipes = [Pipe() for _ in range(self.max_pop_size)]
+        self.evo_result_pipes = [Pipe() for _ in range(self.max_pop_size)]
         self.evo_workers = [Process(target=rollout_worker, args=(
             id, self.evo_task_pipes[id][1], self.evo_result_pipes[id][0], True, self.population, self.critic, self.env,
             self.reward_scale, self.reward_type, self.reward_gamma))
-                            for id in range(self.pop_size)]
+                            for id in range(self.max_pop_size)]
         for worker in self.evo_workers: worker.start()
-        self.evo_flag = [True for _ in range(self.pop_size)]
 
         # Learner rollout workers
         self.task_pipes = [Pipe() for _ in range(self.rollout_size)]
@@ -163,7 +166,6 @@ class My_AL:
             self.reward_scale, self.reward_type, self.reward_gamma))
                         for id in range(self.rollout_size)]
         for worker in self.workers: worker.start()
-        self.roll_flag = [True for _ in range(self.rollout_size)]
 
         # Test bucket
         self.test_bucket = self.manager.list()
@@ -204,16 +206,19 @@ class My_AL:
         self.actor.to(device=self.device)
         ########## JOIN ROLLOUTS FOR EVO POPULATION ############
         all_fitness = []
-
+        exceed_num = 0
         for i in range(self.pop_size):
             _, fitness, _, states, actions, rewards = self.evo_result_pipes[i][1].recv()
             self.memory.push(states, actions, rewards)
-
+            self.last_gen_fitness[i] = fitness
+            if gen > 1:
+                if fitness > self.last_gen_fitness[i]:
+                    exceed_num += 1
             all_fitness.append(fitness)
 
             # self.best_score = max(self.best_score, fitness)
             gen_max = max(gen_max, fitness)
-
+        self.one_fifth_success(exceed_num)
         ########## JOIN ROLLOUTS FOR LEARNER ROLLOUTS ############
         rollout_fitness = []
 
@@ -230,7 +235,6 @@ class My_AL:
             for pipe in self.test_task_pipes: pipe[0].send(0)
 
         ############# UPDATE PARAMS USING GRADIENT DESCENT ##########
-        print()
 
         self.n_episodes += 1
         for _ in range(10):
@@ -240,14 +244,13 @@ class My_AL:
 
         ############ FIGURE OUT THE CHAMP POLICY AND SYNC IT TO TEST #############
         champ_index = all_fitness.index(max(all_fitness))
-
         utils.hard_update(self.test_bucket[0], self.population[champ_index])
-        print('Gen: %d, Interacted max_fitness: %.2f, best_score: %.2f' % (gen, max(all_fitness), self.best_score))
+        # print('Gen: %d, Interacted max_fitness: %.2f, best_score: %.2f' % (gen, max(all_fitness), self.best_score))
         max_pop_fitness = max(all_fitness)
-        if max_pop_fitness > self.best_score:
-            # utils.hard_update(self.best_policy, self.population[champ_index])
-            # torch.save(self.population[champ_index].state_dict(), '_best')
-            print('Elitist exceed the best policy!')
+        # if max_pop_fitness > self.best_score:
+        #     # utils.hard_update(self.best_policy, self.population[champ_index])
+        #     # torch.save(self.population[champ_index].state_dict(), '_best')
+        #     print('Elitist exceed the best policy!')
 
         ###### TEST SCORE ######
         if self.test_flag:
@@ -270,17 +273,17 @@ class My_AL:
             test_mean, test_std = None, None
             max_test_fitness = -float('inf')
 
-        # if max_pop_fitness > max_test_fitness:
-        #     applicant = self.population[champ_index]
-        #     applicant_fitness = max_pop_fitness
-        # else:
-        #     applicant = self.test_bucket[0]
-        #     applicant_fitness = max_test_fitness
-        #
-        # if applicant_fitness > self.best_score / 5:
-        #     self.eval_best_policy_flag =True
-        # else:
-        #     applicant = None
+        if max_pop_fitness > max_test_fitness:
+            applicant = self.population[champ_index]
+            applicant_fitness = max_pop_fitness
+        else:
+            applicant = self.test_bucket[0]
+            applicant_fitness = max_test_fitness
+
+        if applicant_fitness > self.best_score:
+            self.eval_best_policy_flag = True
+        else:
+            applicant = None
 
         # NeuroEvolution's probabilistic selection and recombination step
 
@@ -296,32 +299,35 @@ class My_AL:
 
         for gen in range(1, Max_EPISODES + 1):
 
-            max_fitness, test_mean, test_std, rollout_fitness, applicant, applicant_fitness = self.forward_generation(gen)
+            max_fitness, test_mean, test_std, rollout_fitness, applicant, applicant_fitness = self.forward_generation(
+                gen)
             if test_mean: self.writer.add_scalar('test_score', test_mean, gen)
 
             if gen % 10 == 0:
 
-                # if self.eval_best_policy_flag:
-                #     self.eval_best_policy_flag = False
-                #     rewards, (vehicle_speed, vehicle_position), steps, avg_speeds = self.evaluation(
-                #         self.dirs['train_videos'], applicant, self.env_eval, eval_episodes=3,
-                #         is_train=True)
-                #     rewards_mu, rewards_std = agg_double_list(rewards)
-                #     print("Gen %d, Applicant Average Reward %.2f" % (gen, rewards_mu))
-                #
-                #     if rewards_mu > self.eval_rewards[-1]:
-                #         self.exceed_times += 1
-                #         utils.hard_update(self.best_policy, applicant)
-                #         self.eval_rewards[-1] = rewards_mu
-                #         self.best_score = applicant_fitness
-                #         print("Break Through! Best policy saved with reward", '%.2f' % rewards_mu)
-                #     else:
-                #         rewards_mu = self.eval_rewards[-1]
-                #
-                # else:
-                #     rewards_mu = self.eval_rewards[-1]
-                # self.eval_rewards.append(rewards_mu)
-                # print('Best applicant reward ever: %.2f, exceed times: %d' % (self.eval_rewards[-1], self.exceed_times))
+                if self.eval_best_policy_flag:
+                    self.eval_best_policy_flag = False
+                    rewards, _, steps, avg_speeds = self.evaluation(
+                        self.dirs['train_videos'], applicant, self.env_eval, eval_episodes=3,
+                        is_train=True)
+                    rewards_mu, rewards_std = agg_double_list(rewards)
+                    print("Gen %d, Applicant Average Reward %.2f" % (gen, rewards_mu))
+
+                    if rewards_mu > self.eval_rewards[-1]:
+                        self.exceed_times += 1
+                        if self.pop_size < self.max_pop_size:
+                            utils.hard_update(self.population[self.pop_size], applicant)
+                            self.pop_size += 1
+                        utils.hard_update(self.best_policy, applicant)
+                        self.eval_rewards[-1] = rewards_mu
+                        self.best_score = applicant_fitness
+                        print('Break Through! Best policy saved with reward %.2f, exceed times: %d' % (
+                        rewards_mu, self.exceed_times))
+                    else:
+                        rewards_mu = self.eval_rewards[-1]
+                else:
+                    rewards_mu = self.eval_rewards[-1]
+                self.eval_rewards.append(rewards_mu)
 
                 self.actor.cpu()  # learner的q_network
                 rewards, (vehicle_speed, vehicle_position), steps, avg_speeds = self.evaluation(
@@ -329,20 +335,13 @@ class My_AL:
                 rewards_mu_actor, rewards_std = agg_double_list(rewards)
                 avg_speeds = np.mean(avg_speeds)
                 print("Gen %d, Actor Average Reward %.2f, Avg Speed %.2f" % (gen, rewards_mu_actor, avg_speeds))
-                # if rewards_mu_actor > self.eval_rewards[-1]:
-                #     print('actor exceed the best policy!')
-                #     utils.hard_update(target=self.best_policy, source=self.actor)
-                #     self.eval_rewards[-1] = rewards_mu_actor
-                # episodes.append(madqn.n_episodes + 1)
                 self.actor_rewards.append(rewards_mu_actor)
                 self.average_speed.append(avg_speeds)
                 self.actor.to(device=self.device)
 
         self.save(self.dirs['models'], Max_EPISODES)
-        # eval_rewards = np.array(self.eval_rewards)
         actor_rewards = np.array(self.actor_rewards)
         avg_speeds = np.array(self.average_speed)
-        # np.save(self.dirs['eval_logs'] + 'best_policy_rewards.npy', eval_rewards)
         np.save(self.dirs['eval_logs'] + 'learner_rewards.npy', actor_rewards)
         np.save(self.dirs['eval_logs'] + 'avg_speed.npy', avg_speeds)
         # plt.figure()
@@ -370,7 +369,6 @@ class My_AL:
                 (1. - self.target_tau) * t.data + self.target_tau * s.data)
 
     def bp(self, actor, actor_optimizer, update_target=True):
-        # print('actor == self.actor: ', actor == self.actor)
         batch = self.memory.sample(self.batch_size)
         states_var = to_tensor_var(batch.states, self.use_cuda).view(-1, self.n_agents, self.state_dim)
         actions_var = to_tensor_var(batch.actions, self.use_cuda).view(-1, self.n_agents, self.action_dim)
@@ -436,11 +434,11 @@ class My_AL:
             done = False
             if is_train:
                 if self.traffic_density == 1:
-                    state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i+1], num_CAV=i + 1)
+                    state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i + 1], num_CAV=i + 1)
                 elif self.traffic_density == 2:
-                    state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i+1], num_CAV=i + 2)
+                    state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i + 1], num_CAV=i + 2)
                 elif self.traffic_density == 3:
-                    state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i+1], num_CAV=i + 4)
+                    state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i + 1], num_CAV=i + 4)
             else:
                 state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i])
 
@@ -545,3 +543,12 @@ class My_AL:
                  'optimizer_state_dict': self.actor_optimizer.state_dict(),
                  'best_policy': self.best_policy.state_dict()},
                 file_path)
+
+    def one_fifth_success(self, exceed_num, mutation_factor=0.817):
+        exceed_percentage = exceed_num / self.pop_size
+        if exceed_percentage > 0.2:
+            self.mutation_prob /= mutation_factor
+            self.crossover_prob /= mutation_factor
+        elif exceed_percentage < 0.2:
+            self.mutation_prob *= mutation_factor
+            self.crossover_prob *= mutation_factor

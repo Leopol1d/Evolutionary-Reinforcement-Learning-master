@@ -79,6 +79,7 @@ if __name__ == '__main__':
     EVAL_INTERVAL = config.getint('TRAIN_CONFIG', 'EVAL_INTERVAL')
     EVAL_EPISODES = config.getint('TRAIN_CONFIG', 'EVAL_EPISODES')
     reward_scale = config.getfloat('TRAIN_CONFIG', 'reward_scale')
+    train_step = config.getint('TRAIN_CONFIG', 'train_step')
 
     # init env
     env = gym.make('merge-multi-agent-v0')
@@ -111,13 +112,19 @@ if __name__ == '__main__':
     env_eval.config['traffic_density'] = config.getint('ENV_CONFIG', 'traffic_density')
     env_eval.config['action_masking'] = config.getboolean('MODEL_CONFIG', 'action_masking')
 
-
+    # EA config
+    pop_size = config.getint('EA_CONFIG', 'pop_size')
+    rollout_size = config.getint('EA_CONFIG', 'rollout_size')
+    max_pop_size = config.getint('EA_CONFIG', 'max_pop_size')
+    weight_magnitude_limit = config.getint('EA_CONFIG', 'weight_magnitude_limit')
+    elite_fraction = config.getfloat('EA_CONFIG', 'elite_fraction')
+    crossover_prob = config.getfloat('EA_CONFIG', 'crossover_prob')
+    mutation_prob = config.getfloat('EA_CONFIG', 'mutation_prob')
 
     state_dim = env.n_s
     action_dim = env.n_a
     test_seeds = args.evaluation_seeds
-    pop_size = 20
-    rollout_size = 2
+
     print('BATCH_SIZE: ', BATCH_SIZE, 'pop_size: ', pop_size, 'rollout_size: ', rollout_size)
     import time
     tic = time.time()
@@ -131,9 +138,11 @@ if __name__ == '__main__':
                   reward_gamma=reward_gamma, reward_type=reward_type,
                   max_grad_norm=MAX_GRAD_NORM, test_seeds=test_seeds,
                   episodes_before_train=EPISODES_BEFORE_TRAIN, traffic_density=traffic_density,
-                  pop_size=pop_size, rollout_size=rollout_size,dirs=dirs)
+                  pop_size=pop_size, rollout_size=rollout_size,dirs=dirs, max_pop_size=max_pop_size,
+                  weight_magnitude_limit=weight_magnitude_limit, elite_fraction=elite_fraction,
+                  crossover_prob=crossover_prob, mutation_prob=mutation_prob)
     print('Times: %.2f' % (time.time() - tic))
-    my_al.train(1)
+    my_al.train(train_step)
 
     # my_al = MAPPO(env=env, memory_capacity=MEMORY_CAPACITY,
     #               state_dim=state_dim, action_dim=action_dim,

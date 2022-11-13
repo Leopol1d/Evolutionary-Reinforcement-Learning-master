@@ -6,15 +6,18 @@ from torch.utils.tensorboard import SummaryWriter
 
 class EA:
 
-	def __init__(self):
+	def __init__(self, weight_magnitude_limit, elite_fraction, crossover_prob, mutation_prob, pop_size):
 		self.gen = 0
-		self.population_size = 10
+		self.population_size = pop_size
 		self.writer = SummaryWriter(log_dir='Results/tensorboard/')
 
 		#RL TRACKERS
 		self.rl_policy = None
 		self.selection_stats = {'elite': 0, 'selected': 0, 'discarded': 0, 'total': 0}
-
+		self.weight_magnitude_limit = weight_magnitude_limit
+		self.elite_fraction = elite_fraction
+		self.crossover_prob = crossover_prob
+		self.mutation_prob = mutation_prob
 
 	def selection_tournament(self, index_rank, num_offsprings, tournament_size):
 		"""Conduct tournament selection
@@ -164,7 +167,7 @@ class EA:
 
 						# Regularization hard limit
 						W[ind_dim1, ind_dim2] = self.regularize_weight(W[ind_dim1, ind_dim2],
-																	   10000000)
+																	   self.weight_magnitude_limit)
 
 			elif len(W.shape) == 1:  # Bias or layernorm
 				num_weights = W.shape[0]
@@ -185,7 +188,7 @@ class EA:
 							W[ind_dim] += random.gauss(0, mut_strength * W[ind_dim])
 
 						# Regularization hard limit
-						W[ind_dim] = self.regularize_weight(W[ind_dim], 10000000)
+						W[ind_dim] = self.regularize_weight(W[ind_dim], self.weight_magnitude_limit)
 
 	def reset_genome(self, gene):
 		"""Reset a model's weights in place
@@ -204,7 +207,7 @@ class EA:
 
 
 		self.gen+= 1;
-		num_elitists = int(0.2 * len(fitness_evals))
+		num_elitists = int(self.elite_fraction * len(fitness_evals))
 		if num_elitists < 2:
 			num_elitists = 2
 
@@ -268,14 +271,14 @@ class EA:
 
 		# Crossover for selected offsprings
 		for i, j in zip(offsprings[0::2], offsprings[1::2]):
-			if random.random() < 0.15:
+			if random.random() < self.crossover_prob:
 				self.crossover_inplace(pop[i], pop[j])
 
 
 		# Mutate all genes in the population except the new elitists
 		for net_i in range(len(pop)):
 			if net_i not in new_elitists:  # Spare the new elitists
-				if random.random() < 0.90:
+				if random.random() < self.mutation_prob:
 					self.mutate_inplace(pop[net_i])
 
 	def epoch(self, gen, pop, pop_fitness, migration, mig_fitness, best_policy):
