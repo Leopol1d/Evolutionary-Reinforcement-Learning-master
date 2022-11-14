@@ -173,12 +173,12 @@ class My_AL:
             ActorNetwork(self.state_dim, self.actor_hidden_size, self.action_dim, self.actor_output_act))
 
         # Test workers
-        self.test_task_pipes = [Pipe() for _ in range(3)]
-        self.test_result_pipes = [Pipe() for _ in range(3)]
+        self.test_task_pipes = [Pipe() for _ in range(1)]
+        self.test_result_pipes = [Pipe() for _ in range(1)]
         self.test_workers = [Process(target=rollout_worker, args=(
             id, self.test_task_pipes[id][1], self.test_result_pipes[id][0], False, self.population, self.critic,
             self.env, self.reward_scale, self.reward_type, self.reward_gamma))
-                             for id in range(3)]
+                             for id in range(1)]
         for worker in self.test_workers: worker.start()
         self.test_flag = False
 
@@ -283,6 +283,7 @@ class My_AL:
         if applicant_fitness > self.best_score:
             self.eval_best_policy_flag = True
         else:
+            self.eval_best_policy_flag = False
             applicant = None
 
         # NeuroEvolution's probabilistic selection and recombination step
@@ -308,7 +309,7 @@ class My_AL:
                 if self.eval_best_policy_flag:
                     self.eval_best_policy_flag = False
                     rewards, _, steps, avg_speeds = self.evaluation(
-                        self.dirs['train_videos'], applicant, self.env_eval, eval_episodes=3,
+                            self.dirs['train_videos'], applicant, self.env_eval, eval_episodes=3,
                         is_train=True)
                     rewards_mu, rewards_std = agg_double_list(rewards)
                     print("Gen %d, Applicant Average Reward %.2f" % (gen, rewards_mu))
