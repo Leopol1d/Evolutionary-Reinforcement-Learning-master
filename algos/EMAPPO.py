@@ -210,10 +210,9 @@ class My_AL:
         for i in range(self.pop_size):
             _, fitness, _, states, actions, rewards = self.evo_result_pipes[i][1].recv()
             self.memory.push(states, actions, rewards)
+            if fitness > self.last_gen_fitness[i]:
+                exceed_num += 1
             self.last_gen_fitness[i] = fitness
-            if gen > 1:
-                if fitness > self.last_gen_fitness[i]:
-                    exceed_num += 1
             all_fitness.append(fitness)
 
             # self.best_score = max(self.best_score, fitness)
@@ -258,9 +257,9 @@ class My_AL:
             test_scores = []
             for pipe in self.test_result_pipes:  # Collect all results
                 _, fitness, _, states, actions, rewards = pipe[1].recv()
-                if fitness > self.best_score:
+                # if fitness > self.best_score:
                     # utils.hard_update(target=self.best_policy, source=self.test_bucket[0])
-                    print('test_bucket exceed the best policy!')
+                    # print('test_bucket exceed the best policy!')
                 gen_max = max(gen_max, fitness)
                 test_scores.append(fitness)
             test_scores = np.array(test_scores)
@@ -304,41 +303,43 @@ class My_AL:
                 gen)
             if test_mean: self.writer.add_scalar('test_score', test_mean, gen)
 
-            if gen % 10 == 0:
+            # if gen % 10 == 0:
 
-                if self.eval_best_policy_flag:
-                    self.eval_best_policy_flag = False
-                    rewards, _, steps, avg_speeds = self.evaluation(
-                            self.dirs['train_videos'], applicant, self.env_eval, eval_episodes=3,
-                        is_train=True)
-                    rewards_mu, rewards_std = agg_double_list(rewards)
-                    print("Gen %d, Applicant Average Reward %.2f" % (gen, rewards_mu))
+            if self.eval_best_policy_flag:
+                self.eval_best_policy_flag = False
+                rewards, _, steps, avg_speeds = self.evaluation(
+                        self.dirs['train_videos'], applicant, self.env_eval, eval_episodes=3,
+                    is_train=True)
+                rewards_mu, rewards_std = agg_double_list(rewards)
+                # print("Gen %d, Applicant Average Reward %.2f" % (gen, rewards_mu))
 
-                    if rewards_mu > self.eval_rewards[-1]:
-                        self.exceed_times += 1
-                        if self.pop_size < self.max_pop_size:
-                            utils.hard_update(self.population[self.pop_size], applicant)
-                            self.pop_size += 1
-                        utils.hard_update(self.best_policy, applicant)
-                        self.eval_rewards[-1] = rewards_mu
-                        self.best_score = applicant_fitness
-                        print('Break Through! Best policy saved with reward %.2f, exceed times: %d' % (
-                        rewards_mu, self.exceed_times))
-                    else:
-                        rewards_mu = self.eval_rewards[-1]
+                if rewards_mu > self.eval_rewards[-1]:
+                    self.exceed_times += 1
+                    if self.pop_size < self.max_pop_size:
+                        utils.hard_update(self.population[self.pop_size], applicant)
+                        self.pop_size += 1
+                    utils.hard_update(self.best_policy, applicant)
+                    self.best_score = applicant_fitness
+                    print('Break Through! Best policy saved with reward %.2f, exceed times: %d' % (
+                    rewards_mu, self.exceed_times))
                 else:
                     rewards_mu = self.eval_rewards[-1]
-                self.eval_rewards.append(rewards_mu)
+            else:
+                rewards_mu = self.eval_rewards[-1]
+            self.eval_rewards.append(rewards_mu)
 
-                self.actor.cpu()  # learner的q_network
-                rewards, (vehicle_speed, vehicle_position), steps, avg_speeds = self.evaluation(
-                    self.dirs['train_videos'], self.actor, self.env_eval, eval_episodes=3, is_train=True)
-                rewards_mu_actor, rewards_std = agg_double_list(rewards)
-                avg_speeds = np.mean(avg_speeds)
-                print("Gen %d, Actor Average Reward %.2f, Avg Speed %.2f" % (gen, rewards_mu_actor, avg_speeds))
-                self.actor_rewards.append(rewards_mu_actor)
-                self.average_speed.append(avg_speeds)
-                self.actor.to(device=self.device)
+            self.actor.cpu()  # learner的q_network
+            rewards, (vehicle_speed, vehicle_position), steps, avg_speeds = self.evaluation(
+                self.dirs['train_videos'], self.actor, self.env_eval, eval_episodes=3, is_train=True)
+            rewards_mu_actor, rewards_std = agg_double_list(rewards)
+            avg_speeds = np.mean(avg_speeds)
+            self.actor_rewards.append(rewards_mu_actor)
+            self.average_speed.append(avg_speeds)
+            self.actor.to(device=self.device)
+            if gen % 10 == 0:
+                avg_10_rewards, avg_rewards_std = np.mean(self.actor_rewards[-10:]), np.std(self.actor_rewards[-10:])
+                avg_10_speeds, avg_speed_std = np.mean(self.average_speed[-10:]), np.std(self.average_speed[-10:])
+                print("Gen %d, Actor Average Reward %.2f, Avg Speed %.2f" % (gen, avg_10_rewards, avg_10_speeds))
 
         self.save(self.dirs['models'], Max_EPISODES)
         actor_rewards = np.array(self.actor_rewards)

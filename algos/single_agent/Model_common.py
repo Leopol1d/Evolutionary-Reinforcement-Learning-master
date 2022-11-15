@@ -13,7 +13,7 @@ class ActorNetwork(nn.Module):
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.fc3 = nn.Linear(hidden_size, output_size)
         # activation function for the output
-        self.output_act = output_act
+        self.output_act = output_act # log_softmax
 
     def __call__(self, state):
         out = nn.functional.relu(self.fc1(state))
