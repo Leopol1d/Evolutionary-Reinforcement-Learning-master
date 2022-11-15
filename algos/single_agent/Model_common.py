@@ -1,6 +1,9 @@
+from copy import deepcopy
+
 import torch as th
 from torch import nn
-
+import torch
+import numpy as np
 
 class ActorNetwork(nn.Module):
     """
@@ -22,6 +25,37 @@ class ActorNetwork(nn.Module):
         out = self.output_act(self.fc3(out), dim=-1)
         return out
 
+    def set_params(self, params):
+        """
+        Set the params of the network to the given parameters
+        """
+        cpt = 0
+        for param in self.parameters():
+            tmp = np.product(param.size())
+
+            if torch.cuda.is_available():
+                param.data.copy_(torch.from_numpy(
+                    params[cpt:cpt + tmp]).view(param.size()).cuda())
+            else:
+                param.data.copy_(torch.from_numpy(
+                    params[cpt:cpt + tmp]).view(param.size()))
+            cpt += tmp
+
+    def get_params(self):
+        """
+        Returns parameters of the actor
+        """
+        return deepcopy(np.hstack([to_numpy(v, True).flatten() for v in
+                                   self.parameters()]))
+
+    def get_size(self):
+        """
+        Returns the number of parameters of the network
+        """
+        return self.get_params().shape[0]
+
+def to_numpy(var, USE_CUDA):
+    return var.cpu().data.numpy() if USE_CUDA else var.data.numpy()
 
 class CriticNetwork(nn.Module):
     """

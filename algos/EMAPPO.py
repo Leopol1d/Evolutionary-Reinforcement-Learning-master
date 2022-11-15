@@ -51,7 +51,8 @@ class My_AL:
                  max_grad_norm=0.5, batch_size=100, episodes_before_train=100,
                  use_cuda=True, traffic_density=2, reward_type="global_R",
                  pop_size=50, rollout_size=10, dirs=None, max_pop_size=50, weight_magnitude_limit=100000,
-                 elite_fraction=0.2, crossover_prob=0.15, mutation_prob=0.9):
+                 elite_fraction=0.2, crossover_prob=0.15, mutation_prob=0.9,
+                 sigma_init=1e-3, damp=1e-3, damp_limit=1e-5):
         self.dirs = dirs
         self.pop_size = pop_size
         self.rollout_size = rollout_size
@@ -61,6 +62,13 @@ class My_AL:
         self.elite_fraction = elite_fraction
         self.crossover_prob = crossover_prob
         self.mutation_prob = mutation_prob
+
+        self.terminate_flag = False
+        self.train_actor_num = 1
+        self.train_actor = []
+        self.train_actor_target = []
+        self.train_optimizer = []
+
         assert traffic_density in [1, 2, 3]
         assert reward_type in ["regionalR", "global_R"]
         self.reward_type = reward_type
@@ -101,9 +109,15 @@ class My_AL:
 
         self.actor = ActorNetwork(self.state_dim, self.actor_hidden_size,
                                   self.action_dim, self.actor_output_act)
+
+        self.train_actor.append(self.actor)
+
         self.critic = CriticNetwork(self.state_dim, self.action_dim, self.critic_hidden_size, 1)
         # to ensure target network and learning network has the same weights
         self.actor_target = deepcopy(self.actor)
+
+        self.train_actor_target.append(self.actor_target)
+
         self.critic_target = deepcopy(self.critic)
         self.device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
         self.n_agents = len(self.env.controlled_vehicles)
@@ -113,6 +127,11 @@ class My_AL:
         elif self.optimizer_type == "rmsprop":
             self.actor_optimizer = RMSprop(self.actor.parameters(), lr=self.actor_lr)
             self.critic_optimizer = RMSprop(self.critic.parameters(), lr=self.critic_lr)
+
+        self.train_optimizer.append(self.actor_optimizer)
+
+        self.merged_actor = ActorNetwork(self.state_dim, self.actor_hidden_size,
+                                         self.action_dim, self.actor_output_act)
 
         if self.use_cuda:
             self.actor.cuda()
@@ -189,13 +208,24 @@ class My_AL:
         self.test_score = None;
         self.test_std = None
 
+
+        self.num_params = self.actor.get_size()
+        print('self.num_params: ',self.num_params)
+        self.mu = self.actor.get_params()
+
+        self.sigma = sigma_init
+        self.damp = damp
+        self.damp_limit = damp_limit
+        self.tau = 0.95
+        self.cov = self.sigma * np.ones(self.num_params)
+
     def forward_generation(self, gen):
         gen_max = -float('inf')
         applicant = None
         applicant_fitness = -float('inf')
         # Start Evolution rollouts
         # while self.memory.__len__() < self.episodes_before_train:
-        for id, actor in enumerate(self.population):
+        for id, actor in enumerate(self.max_pop_size if self.terminate_flag else self.population):
             self.evo_task_pipes[id][0].send(id)
 
         # Sync all learners actor to cpu (rollout) actor and start their rollout
@@ -236,8 +266,16 @@ class My_AL:
         ############# UPDATE PARAMS USING GRADIENT DESCENT ##########
 
         self.n_episodes += 1
-        for _ in range(10):
-            self.bp(self.actor, self.actor_optimizer, update_target=True)
+        es_params = self.ask()
+        for i, param in enumerate(es_params):
+            self.train_actor[i].set_params(param)
+            self.train_actor_target[i].set_params(param)
+            self.train_optimizer[i] = torch.optim.Adam(self.train_actor[i].parameters(), lr=self.actor_lr)
+
+        for actor, actor_target, actor_optimizer in zip(self.train_actor, self.train_actor_target,
+                                                        self.train_optimizer):
+            for _ in range(10):
+                self.bp(actor, actor_target, actor_optimizer, update_target=True)
 
         ######################### END OF PARALLEL ROLLOUTS ################
 
@@ -258,8 +296,8 @@ class My_AL:
             for pipe in self.test_result_pipes:  # Collect all results
                 _, fitness, _, states, actions, rewards = pipe[1].recv()
                 # if fitness > self.best_score:
-                    # utils.hard_update(target=self.best_policy, source=self.test_bucket[0])
-                    # print('test_bucket exceed the best policy!')
+                # utils.hard_update(target=self.best_policy, source=self.test_bucket[0])
+                # print('test_bucket exceed the best policy!')
                 gen_max = max(gen_max, fitness)
                 test_scores.append(fitness)
             test_scores = np.array(test_scores)
@@ -308,7 +346,7 @@ class My_AL:
             if self.eval_best_policy_flag:
                 self.eval_best_policy_flag = False
                 rewards, _, steps, avg_speeds = self.evaluation(
-                        self.dirs['train_videos'], applicant, self.env_eval, eval_episodes=3,
+                    self.dirs['train_videos'], applicant, self.env_eval, eval_episodes=3,
                     is_train=True)
                 rewards_mu, rewards_std = agg_double_list(rewards)
                 # print("Gen %d, Applicant Average Reward %.2f" % (gen, rewards_mu))
@@ -318,28 +356,57 @@ class My_AL:
                     if self.pop_size < self.max_pop_size:
                         utils.hard_update(self.population[self.pop_size], applicant)
                         self.pop_size += 1
+                        self.train_actor_num += 1
+                        new_actor = deepcopy(applicant)
+                        new_actor_target = deepcopy(new_actor)
+                        self.train_actor.append(new_actor.cuda())
+                        self.train_actor_target.append(new_actor_target.cuda())
+                        if self.optimizer_type == "adam":
+                            new_optimizer = Adam(new_actor.parameters(), lr=self.actor_lr)
+                        elif self.optimizer_type == "rmsprop":
+                            new_optimizer = RMSprop(new_actor.parameters(), lr=self.actor_lr)
+                        self.train_optimizer.append(new_optimizer)
+
                     utils.hard_update(self.best_policy, applicant)
                     self.best_score = applicant_fitness
                     print('Break Through! Best policy saved with reward %.2f, exceed times: %d' % (
-                    rewards_mu, self.exceed_times))
+                        rewards_mu, self.exceed_times))
                 else:
                     rewards_mu = self.eval_rewards[-1]
             else:
                 rewards_mu = self.eval_rewards[-1]
             self.eval_rewards.append(rewards_mu)
 
-            self.actor.cpu()  # learner的q_network
-            rewards, (vehicle_speed, vehicle_position), steps, avg_speeds = self.evaluation(
-                self.dirs['train_videos'], self.actor, self.env_eval, eval_episodes=3, is_train=True)
+            # evaluate all the actors
+            train_actor_rewards = []
+            for actor in self.train_actor:
+                actor.cpu()
+                rewards, _, steps, avg_speeds = self.evaluation(
+                    self.dirs['train_videos'], actor, self.env_eval, eval_episodes=3, is_train=True)
+                actor_reward_mu, actor_rewards_std = agg_double_list(rewards)
+                train_actor_rewards.append(actor_reward_mu)
+                actor.to(device=self.device)
+
+            es_params = []
+            for actor in self.train_actor:
+                es_params.append(actor.get_params())
+            self.tell(es_params, train_actor_rewards) # mu改变
+            self.merged_actor.set_params(self.mu) # cpu
+            # evaluate merged actor
+            rewards, _, steps, avg_speeds = self.evaluation(
+                self.dirs['train_videos'], self.merged_actor, self.env_eval, eval_episodes=3, is_train=True)
             rewards_mu_actor, rewards_std = agg_double_list(rewards)
             avg_speeds = np.mean(avg_speeds)
             self.actor_rewards.append(rewards_mu_actor)
             self.average_speed.append(avg_speeds)
-            self.actor.to(device=self.device)
-            if gen % 10 == 0:
-                avg_10_rewards, avg_rewards_std = np.mean(self.actor_rewards[-10:]), np.std(self.actor_rewards[-10:])
-                avg_10_speeds, avg_speed_std = np.mean(self.average_speed[-10:]), np.std(self.average_speed[-10:])
-                print("Gen %d, Actor Average Reward %.2f, Avg Speed %.2f" % (gen, avg_10_rewards, avg_10_speeds))
+            print("Gen %d, Merged Actor Average Reward %.2f, Avg Speed %.2f, Train Actor Num %d " % (
+                gen, rewards_mu_actor, avg_speeds, self.train_actor_num))
+
+            # if gen % 10 == 0:
+            #     avg_10_rewards, avg_rewards_std = np.mean(self.actor_rewards[-10:]), np.std(self.actor_rewards[-10:])
+            #     avg_10_speeds, avg_speed_std = np.mean(self.average_speed[-10:]), np.std(self.average_speed[-10:])
+            #     print("Gen %d, Actor Average Reward %.2f, Avg Speed %.2f, Train Actor Num %d " % (
+            #     gen, avg_10_rewards, avg_10_speeds, self.train_actor_num))
 
         self.save(self.dirs['models'], Max_EPISODES)
         actor_rewards = np.array(self.actor_rewards)
@@ -359,6 +426,7 @@ class My_AL:
         # b = np.load(dir)
         ###Kill all processes
         try:
+            self.terminate_flag = True
             for p in self.task_pipes: p[0].send('TERMINATE')
             for p in self.test_task_pipes: p[0].send('TERMINATE')
             for p in self.evo_task_pipes: p[0].send('TERMINATE')
@@ -370,7 +438,7 @@ class My_AL:
             t.data.copy_(
                 (1. - self.target_tau) * t.data + self.target_tau * s.data)
 
-    def bp(self, actor, actor_optimizer, update_target=True):
+    def bp(self, actor, actor_target, actor_optimizer, update_target=True):
         batch = self.memory.sample(self.batch_size)
         states_var = to_tensor_var(batch.states, self.use_cuda).view(-1, self.n_agents, self.state_dim)
         actions_var = to_tensor_var(batch.actions, self.use_cuda).view(-1, self.n_agents, self.action_dim)
@@ -386,7 +454,7 @@ class My_AL:
             # 被选中动作的值
             action_log_probs = th.sum(action_log_probs * actions_var[:, agent_id, :], 1)
             # target_net中选中动作的值
-            old_action_log_probs = self.actor_target(states_var[:, agent_id, :]).detach()
+            old_action_log_probs = actor_target(states_var[:, agent_id, :]).detach()
             old_action_log_probs = th.sum(old_action_log_probs * actions_var[:, agent_id, :], 1)
             ratio = th.exp(action_log_probs - old_action_log_probs)
             surr1 = ratio * advantages
@@ -413,8 +481,9 @@ class My_AL:
 
         if update_target:
             # update actor target network and critic target network
+            # if self.n_episodes % self.target_update_steps == 0 and self.n_episodes > 0:
+            self._soft_update_target(actor_target, actor)
             if self.n_episodes % self.target_update_steps == 0 and self.n_episodes > 0:
-                self._soft_update_target(self.actor_target, actor)
                 self._soft_update_target(self.critic_target, self.critic)
 
     def evaluation(self, output_dir, policy, env, eval_episodes=3, is_train=True):
@@ -554,3 +623,34 @@ class My_AL:
         elif exceed_percentage < 0.2:
             self.mutation_prob *= mutation_factor
             self.crossover_prob *= mutation_factor
+
+    def ask(self):
+        """
+               Returns a list of candidates parameters
+               """
+        epsilon = np.random.randn(len(self.train_actor), self.num_params)
+        pop = self.mu + epsilon * np.sqrt(self.cov)
+
+        return pop
+
+    def tell(self, solutions, scores):
+        scores = np.array(scores)
+        scores *= -1
+        idx_sorted = np.argsort(scores)
+
+        solutions = np.array(solutions)
+        idx_sorted = np.array(idx_sorted)
+
+        old_mu = self.mu
+        self.damp = self.damp * self.tau + (1 - self.tau) * self.damp_limit
+
+        distribute_num = len(scores) if len(scores) < 4 else len(scores) // 2
+        weights = np.array([np.log((distribute_num + 1) / i)
+                                 for i in range(1, distribute_num + 1)])
+        weights /= weights.sum()
+        self.mu = weights @ solutions[idx_sorted[:distribute_num]]  # @是叉乘
+
+        z = (solutions[idx_sorted[:distribute_num]] - old_mu)
+        self.cov = 1 / distribute_num * weights @ (
+                z * z) + self.damp * np.ones(self.num_params)
+

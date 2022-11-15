@@ -40,34 +40,38 @@ def get_size(actor):
 
 if __name__ == '__main__':
 
-    # actor_hidden_size = 3
+    actor_hidden_size = 3
     # actor1 = ActorNetwork(5, actor_hidden_size,2, nn.functional.log_softmax)
     # num_params = len(list(actor1.parameters()))
-    # print('num_params: ', num_params)
-    # print(get_size(actor1))
-    # print(get_params(actor1))
-    # print('----------------------------------------------------')
-    # for i, param in enumerate(actor1.parameters()):
-    #     print(i, 'param.data: ', param.data)
-    #     print(i, param.shape)
-    # parents = 10
-    # weights = np.array([np.log((parents + 1) / i)
-    #                          for i in range(1, parents + 1)])
-    # print(weights)
-    # weights /= weights.sum()
-    # print(weights)
-    num_params = 38
-    sigma = 1e-3
-    cov = sigma * np.ones(num_params)
-    print('cov: ', cov)
-    epsilon_half = np.random.randn(2, 38)
-    epsilon = np.concatenate([epsilon_half, - epsilon_half])
-    print(epsilon)
-    inds = epsilon * np.sqrt(cov)
-    print(inds.shape)
-    new_damp = 1e-3 * 0.95 + 0.05 * 1e-5
-    print(new_damp)
-
-
-
-
+    # actor1_param = actor1.get_params()
+    # print(actor1_param)
+    # actor2 = ActorNetwork(5, actor_hidden_size,2, nn.functional.log_softmax)
+    # actor2.set_params(actor1_param)
+    # for p1, p2 in zip(actor1.parameters(), actor2.parameters()):
+    #     print(p1.data == p2.data)
+    #     print('p1.data: ', p1.data)
+    #     print('p2.data: ', p2.data)
+    # pop = []
+    # temp = []
+    # for _ in range(5):
+    #     pop.append(ActorNetwork(5, actor_hidden_size, 2, nn.functional.log_softmax).cuda())
+    #     temp.append(ActorNetwork(5, actor_hidden_size, 2, nn.functional.log_softmax).cuda())
+    #
+    # # print(pop[4])
+    #
+    # # for i in pop[-2:]:
+    # #     for param in i.parameters():
+    # #         print(param)
+    # #     print('--------------------------------')
+    #
+    # es_params = []
+    # for actor in pop:
+    #     es_params.append(actor.get_params())
+    #
+    # for i, param in enumerate(es_params):
+    #     temp[i].set_params(param)
+    # for p, t in zip(pop, temp):
+    #     for p1, p2 in zip(p.parameters(), t.parameters()):
+    #         print(p1 == p2)
+    a = ActorNetwork(5, 128, 2, nn.functional.log_softmax)
+    print(a.get_size())
