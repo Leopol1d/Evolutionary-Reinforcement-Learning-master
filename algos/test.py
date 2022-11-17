@@ -73,5 +73,5 @@ if __name__ == '__main__':
     # for p, t in zip(pop, temp):
     #     for p1, p2 in zip(p.parameters(), t.parameters()):
     #         print(p1 == p2)
-    a = ActorNetwork(5, 128, 2, nn.functional.log_softmax)
-    print(a.get_size())
+    # a = ActorNetwork(5, 128, 2, nn.functional.log_softmax)
+    # print(a.get_size())

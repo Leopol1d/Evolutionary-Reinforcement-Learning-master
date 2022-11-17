@@ -4,14 +4,22 @@ from torch import nn
 import configparser
 from torch.optim import Adam, RMSprop
 from torch.utils.tensorboard import SummaryWriter
+import numpy as np, os, time, random, torch, sys
 
 config_dir = 'configs/configs_dqn.ini'
 config = configparser.ConfigParser()
 config.read(config_dir)
 torch_seed = config.getint('MODEL_CONFIG', 'torch_seed')
+
 th.manual_seed(torch_seed)
+th.cuda.manual_seed_all(torch_seed)
 th.backends.cudnn.benchmark = False
 th.backends.cudnn.deterministic = True  # 每次返回的卷积算法将是确定的
+import random
+random.seed(torch_seed)
+np.random.seed(torch_seed)
+
+
 
 import os, logging
 import numpy as np
@@ -24,7 +32,6 @@ import sys
 sys.path.append("..")
 from single_agent.utils import agg_double_list, VideoRecorder
 
-import numpy as np, os, time, random, torch, sys
 from neuroevolution import SSNE
 from core import utils
 from core.my_runner_ppo import rollout_worker
@@ -132,6 +139,7 @@ class My_AL:
 
         self.merged_actor = ActorNetwork(self.state_dim, self.actor_hidden_size,
                                          self.action_dim, self.actor_output_act)
+        self.sorted_actor_index = [0]
 
         if self.use_cuda:
             self.actor.cuda()
@@ -229,11 +237,21 @@ class My_AL:
             self.evo_task_pipes[id][0].send(id)
 
         # Sync all learners actor to cpu (rollout) actor and start their rollout
-        self.actor.cpu()  # learner的q_network
-        for rollout_id in range(len(self.rollout_bucket)):
-            utils.hard_update(self.rollout_bucket[rollout_id], self.actor)
-            self.task_pipes[rollout_id][0].send(0)
-        self.actor.to(device=self.device)
+        # self.actor.cpu()  # learner的q_network
+        # for rollout_id in range(len(self.rollout_bucket)):
+        #     utils.hard_update(self.rollout_bucket[rollout_id], self.actor)
+        #     self.task_pipes[rollout_id][0].send(0)
+        # self.actor.to(device=self.device)
+
+        rollout_num = min(len(self.rollout_bucket), len(self.train_actor))
+        for i in range(rollout_num):
+            j = self.sorted_actor_index[i]
+            self.train_actor[j].cpu()
+            utils.hard_update(self.rollout_bucket[i], self.train_actor[j])
+            self.task_pipes[i][0].send(0)
+            self.train_actor[j].to(device=self.device)
+
+
         ########## JOIN ROLLOUTS FOR EVO POPULATION ############
         all_fitness = []
         exceed_num = 0
@@ -250,8 +268,7 @@ class My_AL:
         self.one_fifth_success(exceed_num)
         ########## JOIN ROLLOUTS FOR LEARNER ROLLOUTS ############
         rollout_fitness = []
-
-        for i in range(self.rollout_size):
+        for i in range(rollout_num):
             _, fitness, _, states, actions, rewards = self.result_pipes[i][1].recv()
             self.memory.push(states, actions, rewards)
             # self.best_score = max(self.best_score, fitness)
@@ -274,20 +291,16 @@ class My_AL:
 
         for actor, actor_target, actor_optimizer in zip(self.train_actor, self.train_actor_target,
                                                         self.train_optimizer):
-            for _ in range(10):
-                self.bp(actor, actor_target, actor_optimizer, update_target=True)
+            # for _ in range(10):
+            self.bp(actor, actor_target, actor_optimizer, update_target=True)
 
         ######################### END OF PARALLEL ROLLOUTS ################
 
         ############ FIGURE OUT THE CHAMP POLICY AND SYNC IT TO TEST #############
         champ_index = all_fitness.index(max(all_fitness))
         utils.hard_update(self.test_bucket[0], self.population[champ_index])
-        # print('Gen: %d, Interacted max_fitness: %.2f, best_score: %.2f' % (gen, max(all_fitness), self.best_score))
         max_pop_fitness = max(all_fitness)
-        # if max_pop_fitness > self.best_score:
-        #     # utils.hard_update(self.best_policy, self.population[champ_index])
-        #     # torch.save(self.population[champ_index].state_dict(), '_best')
-        #     print('Elitist exceed the best policy!')
+
 
         ###### TEST SCORE ######
         if self.test_flag:
@@ -349,7 +362,6 @@ class My_AL:
                     self.dirs['train_videos'], applicant, self.env_eval, eval_episodes=3,
                     is_train=True)
                 rewards_mu, rewards_std = agg_double_list(rewards)
-                # print("Gen %d, Applicant Average Reward %.2f" % (gen, rewards_mu))
 
                 if rewards_mu > self.eval_rewards[-1]:
                     self.exceed_times += 1
@@ -390,7 +402,7 @@ class My_AL:
             es_params = []
             for actor in self.train_actor:
                 es_params.append(actor.get_params())
-            self.tell(es_params, train_actor_rewards) # mu改变
+            self.sorted_actor_index = self.tell(es_params, train_actor_rewards) # mu改变
             self.merged_actor.set_params(self.mu) # cpu
             # evaluate merged actor
             rewards, _, steps, avg_speeds = self.evaluation(
@@ -559,6 +571,7 @@ class My_AL:
 
     def action(self, state, n_agents, net):
         softmax_actions = self._softmax_action(state, n_agents, net)
+        # print('softmax_actions: ', softmax_actions)
         actions = []
         for pi in softmax_actions:
             actions.append(np.random.choice(np.arange(len(pi)), p=pi))
@@ -644,7 +657,9 @@ class My_AL:
         old_mu = self.mu
         self.damp = self.damp * self.tau + (1 - self.tau) * self.damp_limit
 
-        distribute_num = len(scores) if len(scores) < 4 else len(scores) // 2
+        distribute_num = len(scores) if len(scores) < 2 else 2
+
+        # distribute_num = len(scores) if len(scores) < 4 else len(scores) // 2
         weights = np.array([np.log((distribute_num + 1) / i)
                                  for i in range(1, distribute_num + 1)])
         weights /= weights.sum()
@@ -654,3 +669,4 @@ class My_AL:
         self.cov = 1 / distribute_num * weights @ (
                 z * z) + self.damp * np.ones(self.num_params)
 
+        return idx_sorted
