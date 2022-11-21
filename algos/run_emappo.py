@@ -144,15 +144,4 @@ if __name__ == '__main__':
     print('Times: %.2f' % (time.time() - tic))
     my_al.train(train_step)
 
-    # my_al = MAPPO(env=env, memory_capacity=MEMORY_CAPACITY,
-    #               state_dim=state_dim, action_dim=action_dim,
-    #               batch_size=BATCH_SIZE, entropy_reg=ENTROPY_REG,
-    #               roll_out_n_steps=ROLL_OUT_N_STEPS,
-    #               actor_hidden_size=actor_hidden_size, critic_hidden_size=critic_hidden_size,
-    #               actor_lr=actor_lr, critic_lr=critic_lr, reward_scale=reward_scale,
-    #               target_update_steps=TARGET_UPDATE_STEPS, target_tau=TARGET_TAU,
-    #               reward_gamma=reward_gamma, reward_type=reward_type,
-    #               max_grad_norm=MAX_GRAD_NORM, test_seeds=test_seeds,
-    #               episodes_before_train=EPISODES_BEFORE_TRAIN, traffic_density=traffic_density,
-    #               pop_size=10)
-    # my_al.train(1000)
+

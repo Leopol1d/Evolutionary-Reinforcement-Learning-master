@@ -16,8 +16,8 @@ th.cuda.manual_seed_all(torch_seed)
 th.backends.cudnn.benchmark = False
 th.backends.cudnn.deterministic = True  # 每次返回的卷积算法将是确定的
 import random
-random.seed(torch_seed)
-np.random.seed(torch_seed)
+# random.seed(torch_seed)
+# np.random.seed(torch_seed)
 
 
 
@@ -26,6 +26,8 @@ import numpy as np
 from single_agent.Model_common import ActorNetwork, CriticNetwork
 from single_agent.utils_common import identity, to_tensor_var
 from single_agent.Memory_common import OnPolicyReplayMemory
+
+np.random.seed(torch_seed)
 
 import sys
 
@@ -243,14 +245,20 @@ class My_AL:
         #     self.task_pipes[rollout_id][0].send(0)
         # self.actor.to(device=self.device)
 
-        rollout_num = min(len(self.rollout_bucket), len(self.train_actor))
-        for i in range(rollout_num):
-            j = self.sorted_actor_index[i]
-            self.train_actor[j].cpu()
-            utils.hard_update(self.rollout_bucket[i], self.train_actor[j])
-            self.task_pipes[i][0].send(0)
-            self.train_actor[j].to(device=self.device)
-
+        rollout_num = min(len(self.rollout_bucket), len(self.sorted_actor_index))
+        if gen % 20 == 0:
+            for i in range(rollout_num):
+                j = self.sorted_actor_index[i]
+                self.train_actor[j].cpu()
+                utils.hard_update(self.rollout_bucket[i], self.train_actor[j])
+                self.task_pipes[i][0].send(0)
+                self.train_actor[j].to(device=self.device)
+        else:
+            self.actor.cpu()  # learner的q_network
+            for rollout_id in range(rollout_num):
+                utils.hard_update(self.rollout_bucket[rollout_id], self.actor)
+                self.task_pipes[rollout_id][0].send(0)
+            self.actor.to(device=self.device)
 
         ########## JOIN ROLLOUTS FOR EVO POPULATION ############
         all_fitness = []
@@ -267,6 +275,7 @@ class My_AL:
             gen_max = max(gen_max, fitness)
         self.one_fifth_success(exceed_num)
         ########## JOIN ROLLOUTS FOR LEARNER ROLLOUTS ############
+
         rollout_fitness = []
         for i in range(rollout_num):
             _, fitness, _, states, actions, rewards = self.result_pipes[i][1].recv()
@@ -283,11 +292,12 @@ class My_AL:
         ############# UPDATE PARAMS USING GRADIENT DESCENT ##########
 
         self.n_episodes += 1
-        es_params = self.ask()
-        for i, param in enumerate(es_params):
-            self.train_actor[i].set_params(param)
-            self.train_actor_target[i].set_params(param)
-            self.train_optimizer[i] = torch.optim.Adam(self.train_actor[i].parameters(), lr=self.actor_lr)
+        if gen % 10 == 0:
+            es_params = self.ask()
+            for i, param in enumerate(es_params):
+                self.train_actor[i].set_params(param)
+                self.train_actor_target[i].set_params(param)
+                self.train_optimizer[i] = torch.optim.Adam(self.train_actor[i].parameters(), lr=self.actor_lr)
 
         for actor, actor_target, actor_optimizer in zip(self.train_actor, self.train_actor_target,
                                                         self.train_optimizer):
@@ -308,9 +318,6 @@ class My_AL:
             test_scores = []
             for pipe in self.test_result_pipes:  # Collect all results
                 _, fitness, _, states, actions, rewards = pipe[1].recv()
-                # if fitness > self.best_score:
-                # utils.hard_update(target=self.best_policy, source=self.test_bucket[0])
-                # print('test_bucket exceed the best policy!')
                 gen_max = max(gen_max, fitness)
                 test_scores.append(fitness)
             test_scores = np.array(test_scores)
@@ -337,7 +344,6 @@ class My_AL:
             applicant = None
 
         # NeuroEvolution's probabilistic selection and recombination step
-
         # self.evolver.epoch(gen, self.population, all_fitness, self.rollout_bucket, rollout_fitness, self.best_policy)
         self.evolver.epoch1(gen, self.population, all_fitness, self.rollout_bucket, rollout_fitness)
 
@@ -379,7 +385,6 @@ class My_AL:
                             new_optimizer = RMSprop(new_actor.parameters(), lr=self.actor_lr)
                         self.train_optimizer.append(new_optimizer)
 
-                    utils.hard_update(self.best_policy, applicant)
                     self.best_score = applicant_fitness
                     print('Break Through! Best policy saved with reward %.2f, exceed times: %d' % (
                         rewards_mu, self.exceed_times))
@@ -389,30 +394,38 @@ class My_AL:
                 rewards_mu = self.eval_rewards[-1]
             self.eval_rewards.append(rewards_mu)
 
-            # evaluate all the actors
-            train_actor_rewards = []
-            for actor in self.train_actor:
-                actor.cpu()
-                rewards, _, steps, avg_speeds = self.evaluation(
-                    self.dirs['train_videos'], actor, self.env_eval, eval_episodes=3, is_train=True)
-                actor_reward_mu, actor_rewards_std = agg_double_list(rewards)
-                train_actor_rewards.append(actor_reward_mu)
-                actor.to(device=self.device)
+            if gen % 10 == 0:
+                # evaluate all the actors
+                train_actor_rewards = []
+                for actor in self.train_actor:
+                    actor.cpu()
+                    rewards, _, steps, avg_speeds = self.evaluation(
+                        self.dirs['train_videos'], actor, self.env_eval, eval_episodes=3, is_train=True)
+                    actor_reward_mu, actor_rewards_std = agg_double_list(rewards)
+                    train_actor_rewards.append(actor_reward_mu)
+                    actor.to(device=self.device)
 
-            es_params = []
-            for actor in self.train_actor:
-                es_params.append(actor.get_params())
-            self.sorted_actor_index = self.tell(es_params, train_actor_rewards) # mu改变
-            self.merged_actor.set_params(self.mu) # cpu
-            # evaluate merged actor
-            rewards, _, steps, avg_speeds = self.evaluation(
-                self.dirs['train_videos'], self.merged_actor, self.env_eval, eval_episodes=3, is_train=True)
-            rewards_mu_actor, rewards_std = agg_double_list(rewards)
-            avg_speeds = np.mean(avg_speeds)
-            self.actor_rewards.append(rewards_mu_actor)
-            self.average_speed.append(avg_speeds)
-            print("Gen %d, Merged Actor Average Reward %.2f, Avg Speed %.2f, Train Actor Num %d " % (
-                gen, rewards_mu_actor, avg_speeds, self.train_actor_num))
+                es_params = []
+                for actor in self.train_actor:
+                    es_params.append(actor.get_params())
+                self.sorted_actor_index = self.tell(es_params, train_actor_rewards) # mu改变
+
+                self.merged_actor.set_params(self.mu) # cpu
+                # evaluate merged actor
+                rewards, _, steps, avg_speeds = self.evaluation(
+                    self.dirs['train_videos'], self.merged_actor, self.env_eval, eval_episodes=3, is_train=True)
+                rewards_mu_actor, rewards_std = agg_double_list(rewards)
+                avg_speeds = np.mean(avg_speeds)
+
+                # save best policy
+                if rewards_mu_actor > max(self.actor_rewards):
+                    utils.hard_update(self.best_policy, self.merged_actor)
+
+                self.actor_rewards.append(rewards_mu_actor)
+                self.average_speed.append(avg_speeds)
+                print("Gen %d, Merged Actor Average Reward %.2f, Avg Speed %.2f, Train Actor Num %d " % (
+                    gen, rewards_mu_actor, avg_speeds, self.train_actor_num))
+
 
             # if gen % 10 == 0:
             #     avg_10_rewards, avg_rewards_std = np.mean(self.actor_rewards[-10:]), np.std(self.actor_rewards[-10:])
@@ -574,7 +587,8 @@ class My_AL:
         # print('softmax_actions: ', softmax_actions)
         actions = []
         for pi in softmax_actions:
-            actions.append(np.random.choice(np.arange(len(pi)), p=pi))
+            actions.append(np.argmax(pi))
+            # actions.append(np.random.choice(np.arange(len(pi)), p=pi)) # 换 概率最大
         return actions
 
     def _softmax_action(self, state, n_agents, net):  # state: tensor[[]]
@@ -582,6 +596,12 @@ class My_AL:
 
         softmax_action = []
         for agent_id in range(n_agents):
+            # state2net = state_var[:, agent_id, :]
+            # print('state_var[:, agent_id, :]: ', state2net)
+            # net_result = net(state2net)
+            # print('net(state_var[:, agent_id, :]): ', net_result)
+            # softmax_action_var = torch.exp(net_result)
+
             softmax_action_var = torch.exp(net(state_var[:, agent_id, :]))
             # print('softmax_action_var: ', softmax_action_var)
             # print('softmax_action_var.data.numpy(): ', softmax_action_var.data.numpy()[0])
@@ -623,7 +643,7 @@ class My_AL:
     def save(self, model_dir, global_step):
         file_path = model_dir + 'checkpoint-{:d}.pt'.format(global_step)
         th.save({'global_step': global_step,
-                 'model_state_dict': self.actor.state_dict(),
+                 'model_state_dict': self.merged_actor.state_dict(),
                  'optimizer_state_dict': self.actor_optimizer.state_dict(),
                  'best_policy': self.best_policy.state_dict()},
                 file_path)
@@ -657,9 +677,9 @@ class My_AL:
         old_mu = self.mu
         self.damp = self.damp * self.tau + (1 - self.tau) * self.damp_limit
 
-        distribute_num = len(scores) if len(scores) < 2 else 2
+        # distribute_num = len(scores) if len(scores) < 2 else 2
 
-        # distribute_num = len(scores) if len(scores) < 4 else len(scores) // 2
+        distribute_num = len(scores) if len(scores) < 4 else len(scores) // 2
         weights = np.array([np.log((distribute_num + 1) / i)
                                  for i in range(1, distribute_num + 1)])
         weights /= weights.sum()
@@ -668,5 +688,76 @@ class My_AL:
         z = (solutions[idx_sorted[:distribute_num]] - old_mu)
         self.cov = 1 / distribute_num * weights @ (
                 z * z) + self.damp * np.ones(self.num_params)
-
+        print('self.cov: ', self.cov)
         return idx_sorted
+
+    def evaluation_overall(self, output_dir, policy, env, eval_episodes=3, is_train=True):
+        rewards = []
+        infos = []
+        avg_speeds = []
+        steps = []
+        vehicle_speed = []
+        vehicle_position = []
+        seeds = [int(s) for s in self.test_seeds.split(',')]
+
+        video_recorder = None
+
+        for i in range(eval_episodes):
+            avg_speed = 0
+            step = 0
+            rewards_i = []
+            infos_i = []
+            done = False
+            if is_train:
+                if self.traffic_density == 1:
+                    state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i + 1], num_CAV=i + 1)
+                elif self.traffic_density == 2:
+                    state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i + 1], num_CAV=i + 2)
+                elif self.traffic_density == 3:
+                    state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i + 1], num_CAV=i + 4)
+            else:
+                state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i])
+
+            n_agents = len(env.controlled_vehicles)
+            rendered_frame = env.render(mode="rgb_array")
+            if policy == self.best_policy:
+                video_filename = os.path.join(output_dir,
+                                              "best_policy_testing_episode{}".format(
+                                                  self.n_episodes + 1) + '_{}'.format(i) +
+                                              '.mp4')
+            else:
+                video_filename = os.path.join(output_dir,
+                                              "learner_testing_episode{}".format(
+                                                  self.n_episodes + 1) + '_{}'.format(i) +
+                                              '.mp4')
+
+            if video_filename is not None:
+                # print("Recording video to {} ({}x{}x{}@{}fps)".format(video_filename, *rendered_frame.shape, 5))
+                video_recorder = VideoRecorder(video_filename,
+                                               frame_size=rendered_frame.shape, fps=5)
+                video_recorder.add_frame(rendered_frame)
+            else:
+                video_recorder = None
+
+            while not done:
+                step += 1
+                action = self.action(state, n_agents, policy)
+                state, reward, done, info = env.step(action)
+                avg_speed += info["average_speed"]
+                rendered_frame = env.render(mode="rgb_array")
+                if video_recorder is not None:
+                    video_recorder.add_frame(rendered_frame)
+                rewards_i.append(reward)
+                infos_i.append(info)
+
+            vehicle_speed.append(info["vehicle_speed"])
+            vehicle_position.append(info["vehicle_position"])
+            rewards.append(rewards_i)
+            infos.append(infos_i)
+            steps.append(step)
+            avg_speeds.append(avg_speed / step)
+            #
+            if video_recorder is not None:
+                video_recorder.release()
+            env.close()
+        return rewards, (vehicle_speed, vehicle_position), steps, avg_speeds

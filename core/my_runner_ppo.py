@@ -3,8 +3,7 @@ import numpy
 from core import utils as utils
 import numpy as np
 import torch
-import gym
-from algos.single_agent.Memory_common import ReplayMemory
+from torch.distributions import Categorical
 
 from algos.single_agent.utils_common import identity, to_tensor_var, index_to_one_hot
 # Rollout evaluate an agent in a complete game
@@ -86,15 +85,20 @@ def rollout_worker(id, task_pipe, result_pipe, store_data, model_bucket,
 def explore_action(state, n_agents, net):
     softmax_actions = _softmax_action(state, n_agents, net)
     actions = []
-    for pi in softmax_actions:
-        actions.append(np.random.choice(np.arange(len(pi)), p=pi))
-    return actions
+    with torch.no_grad():
+        for pi in softmax_actions:
+            pi = torch.tensor(pi)
+            dist = Categorical(probs=pi)
+            a = dist.sample()
+            actions.append(a.numpy())
+            # actions.append(np.random.choice(np.arange(len(pi)), p=pi))
+    return np.array(actions)
 
 def clean_action(state, n_agents, net):
     softmax_actions = _softmax_action(state, n_agents, net)
     actions = []
     for pi in softmax_actions:
-        actions.append(np.random.choice(np.arange(len(pi)), p=pi))
+        actions.append(np.argmax(pi))
     return actions
 
 def _softmax_action(state, n_agents, net): # state: tensor[[]]
