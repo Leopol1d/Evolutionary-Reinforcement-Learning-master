@@ -61,7 +61,7 @@ class My_AL:
                  use_cuda=True, traffic_density=2, reward_type="global_R",
                  pop_size=50, rollout_size=10, dirs=None, max_pop_size=50, weight_magnitude_limit=100000,
                  elite_fraction=0.2, crossover_prob=0.15, mutation_prob=0.9,
-                 sigma_init=1e-3, damp=1e-3, damp_limit=1e-5):
+                 sigma_init=1e-3, damp=1e-1, damp_limit=1e-4):
         self.dirs = dirs
         self.pop_size = pop_size
         self.rollout_size = rollout_size
@@ -151,6 +151,7 @@ class My_AL:
 
         self.episode_rewards = [0]
         self.average_speed = [0]
+        self.average_jerk = [0]
         self.epoch_steps = [0]
 
         self.writer = SummaryWriter(log_dir='Results/tensorboard/')
@@ -364,7 +365,7 @@ class My_AL:
 
             if self.eval_best_policy_flag:
                 self.eval_best_policy_flag = False
-                rewards, _, steps, avg_speeds = self.evaluation(
+                rewards, _, steps, avg_speeds, avg_jerks = self.evaluation(
                     self.dirs['train_videos'], applicant, self.env_eval, eval_episodes=3,
                     is_train=True)
                 rewards_mu, rewards_std = agg_double_list(rewards)
@@ -399,7 +400,7 @@ class My_AL:
                 train_actor_rewards = []
                 for actor in self.train_actor:
                     actor.cpu()
-                    rewards, _, steps, avg_speeds = self.evaluation(
+                    rewards, _, steps, avg_speeds, avg_jerks = self.evaluation(
                         self.dirs['train_videos'], actor, self.env_eval, eval_episodes=3, is_train=True)
                     actor_reward_mu, actor_rewards_std = agg_double_list(rewards)
                     train_actor_rewards.append(actor_reward_mu)
@@ -412,10 +413,11 @@ class My_AL:
 
                 self.merged_actor.set_params(self.mu) # cpu
                 # evaluate merged actor
-                rewards, _, steps, avg_speeds = self.evaluation(
+                rewards, _, steps, avg_speeds, avg_jerks = self.evaluation(
                     self.dirs['train_videos'], self.merged_actor, self.env_eval, eval_episodes=3, is_train=True)
                 rewards_mu_actor, rewards_std = agg_double_list(rewards)
                 avg_speeds = np.mean(avg_speeds)
+                avg_jerks = np.mean(avg_jerks)
 
                 # save best policy
                 if rewards_mu_actor > max(self.actor_rewards):
@@ -423,8 +425,9 @@ class My_AL:
 
                 self.actor_rewards.append(rewards_mu_actor)
                 self.average_speed.append(avg_speeds)
-                print("Gen %d, Merged Actor Average Reward %.2f, Avg Speed %.2f, Train Actor Num %d " % (
-                    gen, rewards_mu_actor, avg_speeds, self.train_actor_num))
+                self.average_jerk.append(avg_jerks)
+                print("Gen %d, Merged Actor Average Reward %.2f, Avg Speed %.2f, Avg Jerk %.2f, Train Actor Num %d " % (
+                    gen, rewards_mu_actor, avg_speeds, avg_jerks, self.train_actor_num))
 
 
             # if gen % 10 == 0:
@@ -436,8 +439,11 @@ class My_AL:
         self.save(self.dirs['models'], Max_EPISODES)
         actor_rewards = np.array(self.actor_rewards)
         avg_speeds = np.array(self.average_speed)
+        avg_jerks = np.array(self.average_jerk)
         np.save(self.dirs['eval_logs'] + 'learner_rewards.npy', actor_rewards)
         np.save(self.dirs['eval_logs'] + 'avg_speed.npy', avg_speeds)
+        np.save(self.dirs['eval_logs'] + 'avg_jerk.npy', avg_jerks)
+
         # plt.figure()
         # plt.plot(eval_rewards)
         # plt.plot(actor_rewards)
@@ -515,15 +521,15 @@ class My_AL:
         rewards = []
         infos = []
         avg_speeds = []
+        avg_jerks = []
         steps = []
         vehicle_speed = []
         vehicle_position = []
         seeds = [int(s) for s in self.test_seeds.split(',')]
 
-        video_recorder = None
-
         for i in range(eval_episodes):
             avg_speed = 0
+            avg_jerk = 0
             step = 0
             rewards_i = []
             infos_i = []
@@ -539,34 +545,14 @@ class My_AL:
                 state, action_mask = env.reset(is_training=False, testing_seeds=seeds[i])
 
             n_agents = len(env.controlled_vehicles)
-            # rendered_frame = env.render(mode="rgb_array")
-            # if policy == self.best_policy:
-            #     video_filename = os.path.join(output_dir,
-            #                                   "best_policy_testing_episode{}".format(
-            #                                       self.n_episodes + 1) + '_{}'.format(i) +
-            #                                   '.mp4')
-            # else:
-            #     video_filename = os.path.join(output_dir,
-            #                                   "learner_testing_episode{}".format(
-            #                                       self.n_episodes + 1) + '_{}'.format(i) +
-            #                                   '.mp4')
-
-            # if video_filename is not None:
-            #     # print("Recording video to {} ({}x{}x{}@{}fps)".format(video_filename, *rendered_frame.shape, 5))
-            #     video_recorder = VideoRecorder(video_filename,
-            #                                    frame_size=rendered_frame.shape, fps=5)
-            #     video_recorder.add_frame(rendered_frame)
-            # else:
-            #     video_recorder = None
 
             while not done:
                 step += 1
                 action = self.action(state, n_agents, policy)
                 state, reward, done, info = env.step(action)
                 avg_speed += info["average_speed"]
-                # rendered_frame = env.render(mode="rgb_array")
-                # if video_recorder is not None:
-                #     video_recorder.add_frame(rendered_frame)
+                avg_jerk += info["average_jerk"]
+
                 rewards_i.append(reward)
                 infos_i.append(info)
 
@@ -576,11 +562,9 @@ class My_AL:
             infos.append(infos_i)
             steps.append(step)
             avg_speeds.append(avg_speed / step)
-            #
-            # if video_recorder is not None:
-            #     video_recorder.release()
-            # env.close()
-        return rewards, (vehicle_speed, vehicle_position), steps, avg_speeds
+            avg_jerks.append(avg_jerk / step)
+
+        return rewards, (vehicle_speed, vehicle_position), steps, avg_speeds, avg_jerks
 
     def action(self, state, n_agents, net):
         softmax_actions = self._softmax_action(state, n_agents, net)
@@ -695,6 +679,7 @@ class My_AL:
         rewards = []
         infos = []
         avg_speeds = []
+        avg_jerks = []
         steps = []
         vehicle_speed = []
         vehicle_position = []
@@ -704,6 +689,7 @@ class My_AL:
 
         for i in range(eval_episodes):
             avg_speed = 0
+            avg_jerk = 0
             step = 0
             rewards_i = []
             infos_i = []
@@ -744,6 +730,7 @@ class My_AL:
                 action = self.action(state, n_agents, policy)
                 state, reward, done, info = env.step(action)
                 avg_speed += info["average_speed"]
+                avg_jerk += info["average_jerk"]
                 rendered_frame = env.render(mode="rgb_array")
                 if video_recorder is not None:
                     video_recorder.add_frame(rendered_frame)
@@ -756,8 +743,9 @@ class My_AL:
             infos.append(infos_i)
             steps.append(step)
             avg_speeds.append(avg_speed / step)
+            avg_jerks.append(avg_jerk / step)
             #
             if video_recorder is not None:
                 video_recorder.release()
             env.close()
-        return rewards, (vehicle_speed, vehicle_position), steps, avg_speeds
+        return rewards, (vehicle_speed, vehicle_position), steps, avg_speeds, avg_jerks
